@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Data / databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.csv
+*.parquet
+*.feather
+data/
+
+# Models / artifacts
+*.cbm
+*.pkl
+*.joblib
+catboost_info/
+models/
+
+# Tooling
+.vscode/
+.idea/
+.env
+.DS_Store
+Thumbs.db
