@@ -1,0 +1,75 @@
+{
+  "per_fold_rmse": {
+    "bayes": {
+      "2023": 57.896,
+      "2024": 59.332,
+      "2025": 59.252
+    },
+    "last season ppg x 17": {
+      "2023": 75.608,
+      "2024": 77.233,
+      "2025": 80.697
+    },
+    "position mean": {
+      "2023": 86.965,
+      "2024": 89.267,
+      "2025": 89.332
+    },
+    "repeat last season": {
+      "2023": 61.899,
+      "2024": 63.481,
+      "2025": 65.97
+    }
+  },
+  "averaged": {
+    "rmse": {
+      "bayes": 58.8266,
+      "repeat last season": 63.7833,
+      "last season ppg x 17": 77.8462,
+      "position mean": 88.5214
+    },
+    "mae": {
+      "bayes": 37.8718,
+      "repeat last season": 41.776,
+      "last season ppg x 17": 54.0971,
+      "position mean": 73.5671
+    },
+    "crps": {
+      "bayes": 27.0361,
+      "repeat last season": 41.776,
+      "last season ppg x 17": 54.0971,
+      "position mean": 73.5671
+    },
+    "cov50": {
+      "bayes": 0.6298,
+      "repeat last season": NaN,
+      "last season ppg x 17": NaN,
+      "position mean": NaN
+    },
+    "cov80": {
+      "bayes": 0.8758,
+      "repeat last season": NaN,
+      "last season ppg x 17": NaN,
+      "position mean": NaN
+    },
+    "cov90": {
+      "bayes": 0.9407,
+      "repeat last season": NaN,
+      "last season ppg x 17": NaN,
+      "position mean": NaN
+    },
+    "spearman": {
+      "bayes": 0.6828,
+      "repeat last season": 0.69,
+      "last season ppg x 17": 0.649,
+      "position mean": 0.0626
+    },
+    "bias": {
+      "bayes": 0.7754,
+      "repeat last season": 12.529,
+      "last season ppg x 17": 35.3417,
+      "position mean": 12.529
+    }
+  },
+  "calibration_slope": 1.0608210843254933
+}
