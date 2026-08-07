@@ -165,7 +165,199 @@ print(
 )
 
 
+# ------------------------------------------------------------------- modelling
+#
+# A row's features describe season N; the label is season N+1's PPR total. So
+# the last labelled season is LAST_SEASON - 1: a 2024 row is scored against what
+# actually happened in 2025, and 2025 rows are the *projection* set, with no
+# label because 2026 hasn't been played.
+#
+# Split is by season, never randomly. A random split would put a player's 2022
+# and 2023 rows on both sides, and those rows share most of their signal.
+TEST_SEASON = LAST_SEASON - 1        # 2024 -> scored against 2025
+VALID_SEASON = LAST_SEASON - 2       # 2023 -> early stopping
+TRAIN_SEASONS = list(range(FIRST_SEASON, VALID_SEASON))  # 2021-2022
+PROJECT_SEASON = LAST_SEASON         # 2025 -> unlabelled, predicts 2026
 
-# train = df[df.season < 2024]
-# validate = df[df.season == 2024]
-# test = df[df.season == 2025]
+LABEL = "next_fp_ppr"
+
+# athlete_id is deliberately not a feature. Target-encoding it lets CatBoost
+# memorise a per-player scoring level, which is the same bet as a random
+# intercept in a mixed model - and at the per-game grain it measurably hurt
+# (see the note in train_catboost.py). season is held out too: the model would
+# learn a level for 2021-2022 that means nothing when applied to 2025.
+META_COLS = ["display_name", "season"]
+CAT_COLS = ["athlete_id", "position_abbr"]
+
+FEATURE_COLS = [c for c in df.columns if c not in META_COLS + [LABEL]]
+
+# CatBoost rejects NaN in categorical features, unlike numeric ones.
+df[CAT_COLS] = df[CAT_COLS].fillna("UNK").astype(str)
+
+MODEL_PARAMS = {
+    # RMSE is the honest default but not the best fit for this label: 29% of
+    # rows are exactly 0 and the rest is a skewed positive tail. Swap in
+    # "Tweedie:variance_power=1.5" to model that point mass directly - it takes
+    # no other changes, since Tweedie is still a regression on the same target.
+    "loss_function": "RMSE",
+    "eval_metric": "RMSE",
+    "iterations": 3000,
+    "learning_rate": 0.03,
+    # Shallower and more regularised than the per-game model: ~1,100 training
+    # rows against 40-odd features is a much easier frame to overfit.
+    "depth": 5,
+    "l2_leaf_reg": 6.0,
+    "random_seed": 42,
+    "early_stopping_rounds": 200,
+    "verbose": 500,
+}
+
+IMPORTANCE_PNG = Path(__file__).with_name("season_feature_importance.png")
+
+
+def make_pool(frame: pd.DataFrame) -> Pool:
+    return Pool(frame[FEATURE_COLS], frame[LABEL], cat_features=CAT_COLS)
+
+
+def metrics(y, pred) -> tuple[float, float]:
+    y, pred = np.asarray(y, float), np.asarray(pred, float)
+    return np.sqrt(np.mean((y - pred) ** 2)), np.mean(np.abs(y - pred))
+
+
+train = df[df["season"].isin(TRAIN_SEASONS)]
+valid = df[df["season"] == VALID_SEASON]
+test = df[df["season"] == TEST_SEASON]
+project = df[df["season"] == PROJECT_SEASON]
+
+assert train[LABEL].notna().all() and valid[LABEL].notna().all()
+assert test[LABEL].notna().all(), "test season must be labelled - check LAST_SEASON"
+assert project[LABEL].isna().all(), "projection season should have no label"
+
+print(f"\n{len(FEATURE_COLS)} features, label {LABEL}")
+for name, part, seasons in [
+    ("train", train, TRAIN_SEASONS),
+    ("valid", valid, [VALID_SEASON]),
+    ("test", test, [TEST_SEASON]),
+    ("project", project, [PROJECT_SEASON]),
+]:
+    lbl = part[LABEL]
+    tail = "unlabelled" if lbl.isna().all() else f"mean label {lbl.mean():6.1f}"
+    print(f"  {name:8s} {len(part):5,d} rows  seasons {seasons}  {tail}")
+
+model = CatBoostRegressor(**MODEL_PARAMS)
+model.fit(make_pool(train), eval_set=make_pool(valid), use_best_model=True)
+print("best iteration:", model.get_best_iteration())
+
+pred = model.predict(make_pool(test))
+
+# The bar to clear is not zero - it is "assume he repeats last season", which is
+# already a strong projection at a year-over-year correlation of 0.76.
+print(f"\n=== test: {TEST_SEASON} rows scored against {TEST_SEASON + 1} ===")
+y_test = test[LABEL].to_numpy()
+for label, p in [
+    ("CatBoost", pred),
+    ("repeat this season's fp_ppr", test["fp_ppr"].to_numpy()),
+    ("constant = train mean", np.full(len(test), train[LABEL].mean())),
+    ("constant = test mean (oracle)", np.full(len(test), y_test.mean())),
+]:
+    r, m = metrics(y_test, p)
+    print(f"  {label:32s} RMSE {r:7.2f}  MAE {m:7.2f}")
+
+print(f"\n  calibration -> actual {y_test.mean():.1f} | predicted {pred.mean():.1f}")
+
+scored = test.copy()
+scored["pred"] = pred
+
+print("\n=== by position ===")
+for pos, g in scored.groupby("position_abbr", observed=True):
+    r, m = metrics(g[LABEL], g["pred"])
+    print(
+        f"  {pos:3s} n={len(g):4,d}  RMSE {r:7.2f}  MAE {m:7.2f}  "
+        f"actual {g[LABEL].mean():6.1f}  pred {g['pred'].mean():6.1f}"
+    )
+
+# Zeros are 29% of the label and a different question from "how many points" -
+# splitting them out shows whether the model is projecting the drop-offs at all,
+# or just regressing everyone toward the middle.
+print("\n=== by outcome: did they play the next season? ===")
+for flag, g in scored.groupby(scored[LABEL] == 0):
+    r, m = metrics(g[LABEL], g["pred"])
+    name = "did NOT play" if flag else "played"
+    print(
+        f"  {name:12s} n={len(g):4,d}  actual {g[LABEL].mean():6.1f}  "
+        f"pred {g['pred'].mean():6.1f}  RMSE {r:7.2f}  MAE {m:7.2f}"
+    )
+
+
+# ------------------------------------------------------- expanding-window check
+#
+# There are only four season boundaries in the data, so a single test season is
+# one noisy number. Retraining on each boundary in turn - always predicting
+# forward, never backward - gives four of them for the price of a few seconds.
+#
+# Iterations are fixed rather than early-stopped here: with the fold's own
+# validation set doubling as its score, early stopping would tune on the thing
+# being measured.
+def expanding_window(fixed_iterations: int) -> pd.DataFrame:
+    rows = []
+    for holdout in range(FIRST_SEASON + 1, LAST_SEASON):
+        tr = df[df["season"] < holdout]
+        te = df[df["season"] == holdout]
+        params = {**MODEL_PARAMS, "iterations": fixed_iterations, "verbose": 0}
+        params.pop("early_stopping_rounds")
+        m = CatBoostRegressor(**params).fit(make_pool(tr))
+        r, mae = metrics(te[LABEL], m.predict(make_pool(te)))
+        rb, maeb = metrics(te[LABEL], te["fp_ppr"])
+        rows.append(
+            {"holdout": holdout, "n_train": len(tr), "n_test": len(te),
+             "rmse": r, "mae": mae, "baseline_rmse": rb, "baseline_mae": maeb}
+        )
+    return pd.DataFrame(rows)
+
+
+cv = expanding_window(max(model.get_best_iteration(), 100))
+print("\n=== expanding window (train on all prior seasons, test on holdout) ===")
+print(cv.round(2).to_string(index=False))
+print(
+    f"  mean RMSE {cv['rmse'].mean():.2f} vs baseline {cv['baseline_rmse'].mean():.2f}"
+)
+
+
+# ------------------------------------------------------------------ projections
+
+imp = (
+    pd.DataFrame(
+        {"feature": FEATURE_COLS, "importance": model.get_feature_importance(make_pool(train))}
+    )
+    .sort_values("importance", ascending=False)
+    .reset_index(drop=True)
+)
+print("\n=== top 15 features ===")
+print(imp.head(15).to_string(index=False))
+
+top = imp.head(25).iloc[::-1]
+fig, ax = plt.subplots(figsize=(8, 8))
+ax.barh(top["feature"], top["importance"])
+ax.set_title(f"Top 25 features - label: {LABEL}")
+fig.tight_layout()
+fig.savefig(IMPORTANCE_PNG, dpi=120)
+plt.close(fig)
+print(f"\nfeature importance plot -> {IMPORTANCE_PNG}")
+
+# The actual product: what each 2025 player is projected to score in 2026.
+projected = project[META_COLS + ["position_abbr", "games", "fp_ppr", "age"]].copy()
+projected["projected_next"] = model.predict(
+    Pool(project[FEATURE_COLS], cat_features=CAT_COLS)
+)
+projected = projected.sort_values("projected_next", ascending=False).reset_index(drop=True)
+
+print(f"\n=== top 25 projections for {PROJECT_SEASON + 1} ===")
+print(
+    projected.head(25)
+    .drop(columns=["season"])
+    .to_string(index=False, formatters={
+        "fp_ppr": "{:.1f}".format,
+        "projected_next": "{:.1f}".format,
+        "age": "{:.1f}".format,
+    })
+)
