@@ -10,7 +10,7 @@ everybody.
 Two questions, so two parts (a hurdle):
 
 * **Is he in the league at all?** A Bernoulli on "zero games next season".
-  A player who disappears is not injured for 17 games; he is a different
+  A player who disappears is not injured for a whole season; he is a different
   outcome, and the spike at zero is far too sharp for any count distribution to
   reproduce on its own.
 * **Given he plays, how much?** Beta-binomial over the 17-game season. The

@@ -20,11 +20,13 @@ import pandas as pd
 
 from bayes.data import (
     LAST_SEASON,
+    MAX_MISSED_SEASONS,
     MIN_PEAK_FP,
     apply_peak_filter,
     attach_next_season,
     build_panel,
     qualifying_players,
+    rostered_players,
 )
 from bayes.figures import model_structure, projection_fan
 from bayes.predictive import fit_fold
@@ -95,6 +97,29 @@ def run(
         panel = apply_peak_filter(panel)
         print(f"training on the filtered panel only: {len(panel):,} rows")
 
+    # Players on a roster or unsigned in August, so that missing the whole of
+    # LAST_SEASON does not silently remove a player from the board. He gets a
+    # zero-game row for that season, a correctly widened interval, and a real
+    # dropout probability - rather than no projection at all, which is the one
+    # answer that is certainly wrong.
+    roster = rostered_players()
+    # Mirror the rule `add_missed_seasons` actually applies, rather than the
+    # raw set difference: a player joins the board off a missed season only if
+    # he has history to project from and has missed no more than
+    # MAX_MISSED_SEASONS. The difference is not small - the raw count is 841,
+    # because it sweeps in every 2026 rookie and everyone listed as a free
+    # agent since 2020.
+    last_played = panel.groupby("athlete_id")["season"].max()
+    returning = {
+        a for a in roster
+        if a in last_played.index
+        and 0 < LAST_SEASON - last_played[a] <= MAX_MISSED_SEASONS
+    }
+    print(
+        f"rostered or free agent: {len(roster):,}; of these {len(returning):,} "
+        f"missed {LAST_SEASON} entirely and are projected from a zero-game season"
+    )
+
     warmup, samples, chains = (300, 400, 2) if quick else (1000, 1000, 4)
     proj = fit_fold(
         panel,
@@ -103,6 +128,7 @@ def run(
         num_samples=samples,
         num_chains=chains,
         progress=True,
+        roster_ids=roster,
     )
 
     print("\n=== production model ===")

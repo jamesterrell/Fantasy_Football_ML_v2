@@ -27,7 +27,14 @@ import numpy as np
 import pandas as pd
 
 from bayes.availability import design_matrix, fit_availability, predict_games
-from bayes.data import PPG_FLOOR, SEASON_GAMES, measurement_noise
+from bayes.data import (
+    PPG_FLOOR,
+    SEASON_GAMES,
+    add_missed_seasons,
+    attach_established,
+    attach_next_season,
+    measurement_noise,
+)
 from bayes.production import (
     POS_INDEX,
     build_arrays,
@@ -87,6 +94,7 @@ def fit_fold(
     num_chains: int = 4,
     seed: int = 0,
     progress: bool = False,
+    roster_ids: set | None = None,
 ) -> Projection:
     """Train on seasons <= ``cutoff``, project season ``cutoff + 1``.
 
@@ -94,11 +102,47 @@ def fit_fold(
     truncated first, the aging spline is built on the truncated ages, and the
     availability model only sees transitions whose outcome had already happened
     by the cutoff.
+
+    ``roster_ids`` extends the projection set to players who missed the cutoff
+    season entirely but are on a roster now - see :func:`add_missed_seasons`. It
+    comes from a snapshot with no history, so it belongs to a live projection
+    and never to a backtest fold, which is why it defaults to off.
     """
     # Refit the measurement-variance law on the training seasons only. It is a
     # minor nuisance parameter, but a backtest is only worth running if nothing
     # from the future reaches it.
     train = measurement_noise(panel[panel["season"] <= cutoff].copy())
+
+    # Missed seasons become explicit rows, and this happens *after* truncation
+    # on purpose: `add_missed_seasons` bounds an interior gap by appearances in
+    # the frame it is handed, so truncating first is what keeps a fold from
+    # learning that a player came back in a season it has not reached.
+    #
+    # The new rows need next-season labels too - a zero-game season is a
+    # perfectly good starting point for a transition, and teaching the
+    # availability model what follows one is most of the reason these rows
+    # exist.
+    #
+    # They are *filled in*, never rebuilt. Recomputing them here would silently
+    # destroy the labels on the cutoff season itself: `attach_next_season` only
+    # resolves rows before the last season it can see, and the frame it sees
+    # here stops at the cutoff - so every scored row would come back NaN, which
+    # is exactly what it did. The caller attaches labels while it can still see
+    # one season past the cutoff, and those are the authority wherever they
+    # exist. Only the gap rows arrive missing, and only those get filled.
+    train = add_missed_seasons(train, roster_ids=roster_ids)
+    filled = attach_next_season(
+        train.drop(columns=["next_games", "next_fp_ppr"])
+    )
+    for col in ("next_games", "next_fp_ppr"):
+        train[col] = train[col].fillna(filled[col])
+
+    # Established status, from prior seasons only and from this fold's frame
+    # only - so the median it thresholds against contains nothing the fold has
+    # not reached, the same rule the measurement-variance law follows. Computed
+    # after the gap rows land so a missed season inherits a status rather than
+    # resetting one.
+    train = attach_established(train)
 
     # The grid runs one season past the cutoff. That extra column carries no
     # observation, so it adds nothing to the likelihood - but the filter

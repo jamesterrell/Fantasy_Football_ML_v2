@@ -78,6 +78,7 @@ class PanelArrays:
     games: np.ndarray            # [P,T] games played, SEASON_GAMES where unseen
     age_basis: np.ndarray        # [P,T,K] aging-curve basis, known every season
     start: np.ndarray            # [P,T] True at the player's first season seen
+    est: np.ndarray              # [P,T] True where he counts as established
     ctrl: np.ndarray             # [P,T,C] inputs applied moving *into* season t
     spline_spec: dict = field(repr=False, default_factory=dict)
     ctrl_names: tuple = ()
@@ -145,10 +146,23 @@ def build_arrays(
     pi = panel["athlete_id"].map(p_index).to_numpy()
     si = panel["season"].map(s_index).to_numpy()
 
+    # A row is an observation only if the player actually played that season.
+    # Once missed seasons are represented as explicit zero-game rows, "has a
+    # row" and "was observed" are different things, and conflating them would
+    # feed the filter a scoring rate of zero as though it were measured.
+    played = (
+        panel["played"].to_numpy(bool)
+        if "played" in panel
+        else np.ones(len(panel), bool)
+    )
+
     z[pi, si] = panel["z"].to_numpy()
-    obs[pi, si] = True
+    obs[pi, si] = played
     zvar[pi, si] = panel["z_var"].to_numpy()
-    games[pi, si] = panel["games"].to_numpy()
+    # Leave unobserved cells at a full season so the missed-time offset is
+    # exactly zero there; the filter gates the level on `obs` anyway, so this
+    # only guards against the value being read somewhere it should not be.
+    games[pi[played], si[played]] = panel["games"].to_numpy()[played]
 
     # First season each player is seen. The filter restarts the state there
     # rather than carrying a state that does not yet exist.
@@ -159,6 +173,18 @@ def build_arrays(
         if len(seen):
             first[p] = seen[0]
             start[p, seen[0]] = True
+
+    # ------------------------------------------------------- established status
+    # Carried forward across the grid rather than read cell by cell. Two reasons
+    # it has to be: a season the player missed has no row to read it from, and
+    # the last grid column - the one whose filtered state *is* next season's
+    # forecast - has no row at all. Leaving that column at False would forecast
+    # every established player with the unestablished persistence, which is
+    # precisely the shrinkage this split exists to stop.
+    est = np.zeros((P, T), bool)
+    if "established" in panel:
+        est[pi, si] = panel["established"].to_numpy(bool)
+    np.maximum.accumulate(est, axis=1, out=est)
 
     # ------------------------------------------------------------- aging curve
     # Age is known for every player in every season of the grid, including ones
@@ -218,6 +244,7 @@ def build_arrays(
         games=games,
         age_basis=age_basis,
         start=start,
+        est=est,
         ctrl=ctrl,
         spline_spec=spline_spec,
     )
@@ -247,10 +274,15 @@ def kalman_filter(z, obs, v, m, ctrl, start, rho, sig2, su2):
     player, an initial variance and a permanent variance estimated separately
     would be trading off against each other on almost no information.
 
-    All arrays are (player x season); ``rho``, ``sig2`` and ``su2`` are
-    (player,). Returns the total log likelihood and the filtered mean and
-    variance of the *sum* u + w at every season, which is the quantity the rest
-    of the model cares about.
+    All arrays are (player x season). ``su2`` is (player,) - it is the prior on
+    a career-long quantity, fixed by definition - while ``rho`` and ``sig2`` are
+    (player x season), because how durable a player's form is depends on whether
+    he has established himself, and that changes during a career. See
+    :func:`bayes.data.attach_established`.
+
+    Returns the total log likelihood and the filtered mean and variance of the
+    *sum* u + w at every season, which is the quantity the rest of the model
+    cares about.
 
     Seasons a player did not play contribute no likelihood and no update: the
     state propagates, so his ability keeps aging and his uncertainty keeps
@@ -259,18 +291,24 @@ def kalman_filter(z, obs, v, m, ctrl, start, rho, sig2, su2):
     informative is the availability model's question, not this one's.
     """
     n = rho.shape[0]
-    w_stat = sig2 / jnp.maximum(1.0 - rho ** 2, 1e-6)
 
     def step(carry, xs):
         x, p = carry                      # x: [n,2], p: [n,2,2]
-        z_t, obs_t, v_t, m_t, c_t, s_t = xs
+        z_t, obs_t, v_t, m_t, c_t, s_t, rho_t, sig2_t = xs
+
+        # Stationary variance of the transient part, at this season's own
+        # persistence and innovation.
+        w_stat = sig2_t / jnp.maximum(1.0 - rho_t ** 2, 1e-6)
 
         # ---- predict. u is carried unchanged; w decays and takes the input.
-        x_pred = jnp.stack([x[:, 0], rho * x[:, 1] + c_t], axis=-1)
+        x_pred = jnp.stack([x[:, 0], rho_t * x[:, 1] + c_t], axis=-1)
         p_pred = jnp.stack(
             [
-                jnp.stack([p[:, 0, 0], rho * p[:, 0, 1]], axis=-1),
-                jnp.stack([rho * p[:, 1, 0], rho ** 2 * p[:, 1, 1] + sig2], axis=-1),
+                jnp.stack([p[:, 0, 0], rho_t * p[:, 0, 1]], axis=-1),
+                jnp.stack(
+                    [rho_t * p[:, 1, 0], rho_t ** 2 * p[:, 1, 1] + sig2_t],
+                    axis=-1,
+                ),
             ],
             axis=-2,
         )
@@ -306,17 +344,21 @@ def kalman_filter(z, obs, v, m, ctrl, start, rho, sig2, su2):
         total_var = p_new.sum(axis=(-1, -2))
         return (x_new, p_new), (ll.sum(), total_mean, total_var)
 
+    # Carry entering the first column. `start` resets any player whose career
+    # begins there, so this only has to be finite and sane; it uses the first
+    # season's own persistence.
+    w_stat0 = sig2[:, 0] / jnp.maximum(1.0 - rho[:, 0] ** 2, 1e-6)
     init = (
         jnp.zeros((n, 2)),
         jnp.stack(
             [
                 jnp.stack([su2, jnp.zeros(n)], axis=-1),
-                jnp.stack([jnp.zeros(n), w_stat], axis=-1),
+                jnp.stack([jnp.zeros(n), w_stat0], axis=-1),
             ],
             axis=-2,
         ),
     )
-    xs = (z.T, obs.T, v.T, m.T, ctrl.T, start.T)
+    xs = (z.T, obs.T, v.T, m.T, ctrl.T, start.T, rho.T, sig2.T)
     _, (ll, xf, pf) = lax.scan(step, init, xs)
     return ll.sum(), xf.T, pf.T
 
@@ -370,13 +412,23 @@ def production_model(arr: PanelArrays, use_inputs: bool = True):
         "beta_age", dist.Normal(0.0, 0.3).expand([N_POS, n_basis]).to_event(2)
     )
 
-    # Persistence of the *transient* part of a player's deviation. Beta(2,2) is
-    # deliberately vaguer than it would be for a single-component model: with a
-    # permanent effect now carrying the durable share, rho is free to be low.
-    rho = numpyro.sample("rho", dist.Beta(2.0, 2.0).expand([N_POS]).to_event(1))
+    # Persistence and innovation of the *transient* part, split by whether the
+    # player has established himself. Index 0 is not established, 1 is.
+    #
+    # The panel is unambiguous that these are two processes. Among players with
+    # 14+ games in consecutive seasons - so measurement noise is matched - the
+    # upper half of the skill range carries ability forward at 0.87 with a
+    # residual spread of 0.51; the lower half manages 0.60 and 0.65. One
+    # parameter has to average them, and the average is wrong for both.
+    #
+    # Beta(2,2) is deliberately vague: with a permanent effect carrying the
+    # durable share, rho is free to be low where the data says it is low.
+    rho = numpyro.sample(
+        "rho", dist.Beta(2.0, 2.0).expand([N_POS, 2]).to_event(2)
+    )
     # Year-to-year innovation in the transient part - form, role, health.
     sigma = numpyro.sample(
-        "sigma", dist.HalfNormal(0.5).expand([N_POS]).to_event(1)
+        "sigma", dist.HalfNormal(0.5).expand([N_POS, 2]).to_event(2)
     )
     # Spread of the permanent, career-long player effect.
     sigma_u = numpyro.sample(
@@ -407,6 +459,12 @@ def production_model(arr: PanelArrays, use_inputs: bool = True):
     else:
         ctrl = jnp.zeros_like(v)
 
+    # Per-cell persistence and innovation: the player's position picks the row,
+    # his established status that season picks the column.
+    est = jnp.asarray(arr.est).astype(int)
+    rho_pt = rho[pos[:, None], est]
+    sig2_pt = sigma[pos[:, None], est] ** 2
+
     ll, _, _ = kalman_filter(
         jnp.asarray(arr.z),
         jnp.asarray(arr.obs),
@@ -414,8 +472,8 @@ def production_model(arr: PanelArrays, use_inputs: bool = True):
         m_obs,
         ctrl,
         jnp.asarray(arr.start),
-        rho[pos],
-        sigma[pos] ** 2,
+        rho_pt,
+        sig2_pt,
         sigma_u[pos] ** 2,
     )
     numpyro.factor("kalman_ll", ll)
@@ -462,6 +520,7 @@ def filtered_states(arr: PanelArrays, posterior: dict, use_inputs: bool = True):
     start = jnp.asarray(arr.start)
     ctrl_raw = jnp.asarray(arr.ctrl)
     games = jnp.asarray(arr.games)
+    est = jnp.asarray(arr.est).astype(int)
 
     def one(base, beta_age, rho, sigma, sigma_u, kappa, lam, gamma):
         m = _level(base, beta_age, ab, pos)
@@ -473,7 +532,9 @@ def filtered_states(arr: PanelArrays, posterior: dict, use_inputs: bool = True):
             else jnp.zeros_like(v)
         )
         _, xf, pf = kalman_filter(
-            z, obs, v, m_obs, ctrl, start, rho[pos], sigma[pos] ** 2, sigma_u[pos] ** 2
+            z, obs, v, m_obs, ctrl, start,
+            rho[pos[:, None], est], sigma[pos[:, None], est] ** 2,
+            sigma_u[pos] ** 2,
         )
         # The level returned is full-health ability, without the missed-time
         # offset: the season being forecast has no games count yet, and the

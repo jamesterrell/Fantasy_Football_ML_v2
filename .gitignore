@@ -33,3 +33,6 @@ models/
 .env
 .DS_Store
 Thumbs.db
+
+# Posterior draw matrices - large, regenerable from a projection run
+*.npz

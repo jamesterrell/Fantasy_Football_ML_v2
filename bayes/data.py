@@ -23,16 +23,44 @@ LAST_SEASON = 2025
 
 POSITIONS = ("QB", "RB", "TE", "WR")
 
-# Games in an NFL regular season. 2020 was 16; a handful of rows report 18
-# because of a mid-season trade landing two box scores in one week. Both are
-# clipped to 17 so "share of the season available" means the same thing in
+# ------------------------------------------------------------- the fantasy season
+#
+# Week 18 is excluded everywhere. Three reasons, and they point the same way:
+#
+# 1. No fantasy league plays it, so a week 18 performance is worth nothing to
+#    the decision this model informs.
+# 2. It is where resting shows up. Among top-decile scorers who played 15-16
+#    games, week 18 is the single most-missed week by a wide margin - 38
+#    absences against 26 for the next worst - and weeks 5-14 carry every
+#    player's bye while weeks 17-18 carry none. A contender sitting his starters
+#    is not an injury, but `games` cannot tell the difference, so the missed
+#    -time penalty (`lam`) and the availability model were both fitting rest as
+#    if it were unavailability.
+# 3. It harmonises the panel. 2020 ran 16 games over 17 weeks; 2021 on run 17
+#    over 18. Dropping week 18 makes every season 16 games, which removes a
+#    real bug: with SEASON_GAMES = 17, all 104 players who played every 2020
+#    game were scored as having missed a game, taking a lam * (16-17)/17 hit to
+#    their per-game rate for a season they never missed.
+LAST_FANTASY_WEEK = 17
+
+# Games in a season, after the week 18 cut. A handful of rows still report one
+# more than this because a mid-season trade landed two box scores in one week;
+# those are clipped, so "share of the season available" means the same thing in
 # every row.
-SEASON_GAMES = 17
+SEASON_GAMES = 16
 
 # Age is measured at Sept 1 of the row's own season - a fixed point just before
 # week 1, so a player is straightforwardly a year older each row and two
 # players in the same season stay comparable.
 AGE_REF_MMDD = "-09-01"
+
+# `athletes.experience_years` counts the upcoming season, and `athletes` is a
+# point-in-time snapshot (taken 2026-07-28/08-03, before the 2026 season). So a
+# player's debut is EXPERIENCE_REF - experience_years, and this constant is tied
+# to *when the snapshot was taken*, not to LAST_SEASON. Re-pull `athletes` and it
+# needs re-checking: the test is in `_debut_season`, and the check is whether the
+# median error against observed debut is still zero for uncensored players.
+EXPERIENCE_REF = 2027
 
 # Prior weight, in games, for shrinking a player's own within-season variance
 # toward the position-level variance-mean law. A 3-game season carries almost
@@ -60,6 +88,18 @@ PPG_FLOOR = 1.0
 # the model needs to learn.
 MIN_PEAK_FP = 50.0
 PEAK_WINDOW = (2021, LAST_SEASON)
+
+# How many seasons a rostered player may have missed and still be projected.
+# One: he sat out last year and is on a roster now, which is a real draft
+# question with a real answer. Two is not - nobody drafts a player who has not
+# taken a snap since 2023 - and the players in that bucket are overwhelmingly
+# free agents in name only. See `add_missed_seasons`.
+MAX_MISSED_SEASONS = 1
+
+# Seasons a player must already have played before he can count as established.
+# One good season is a realisation; two is the start of a level. Set against a
+# panel only six seasons deep, so raising it starves the established group.
+ESTABLISHED_MIN_SEASONS = 2
 
 
 def _season_totals() -> pd.DataFrame:
@@ -102,9 +142,10 @@ def _season_totals() -> pd.DataFrame:
         FROM v_player_games
         WHERE season_type = 2
           AND season BETWEEN ? AND ?
+          AND week <= ?
         GROUP BY athlete_id, season
         """,
-        params=(FIRST_SEASON, LAST_SEASON),
+        params=(FIRST_SEASON, LAST_SEASON, LAST_FANTASY_WEEK),
     )
 
 
@@ -122,9 +163,9 @@ def _late_form() -> pd.DataFrame:
         """
         SELECT athlete_id, season, week, game_date, fp_ppr
         FROM v_player_games
-        WHERE season_type = 2 AND season BETWEEN ? AND ?
+        WHERE season_type = 2 AND season BETWEEN ? AND ? AND week <= ?
         """,
-        params=(FIRST_SEASON, LAST_SEASON),
+        params=(FIRST_SEASON, LAST_SEASON, LAST_FANTASY_WEEK),
     )
     games = games.sort_values(["athlete_id", "season", "week", "game_date"])
     tail = games.groupby(["athlete_id", "season"]).tail(8)
@@ -135,6 +176,39 @@ def _late_form() -> pd.DataFrame:
     )
     late["late_z"] = np.sqrt(late["late_ppg"].clip(lower=0.0))
     return late[["athlete_id", "season", "late_z"]]
+
+
+def _debut_season(panel_first: pd.Series) -> pd.Series:
+    """True first NFL season per player, from `athletes` plus the panel.
+
+    `seasons_seen` used to be a cumcount inside the 2020-2025 window, which is
+    left-censored at the start of it: every 2020 row read 0, whether the player
+    was an actual rookie or a ten-year veteran. 257 of the 553 players first
+    seen in 2020 were not rookies - some had debuted as far back as 1998 - so
+    the `rookie` indicator in the availability model was firing on nearly half
+    that cohort wrongly.
+
+    `athletes.experience_years` fixes it, with two corrections.
+
+    **The offset.** The field counts the *upcoming* season, so a player about to
+    play his first year reads 1, not 0. Validated against the 633 players whose
+    first panel season is 2021 or later - late enough that the window is not
+    censoring them - `EXPERIENCE_REF - experience_years` lands exactly on the
+    observed debut for 56% of them with a median error of zero, against 16% and
+    a median error of -1 for the uncorrected version.
+
+    **The floor.** The remainder is noisy in both directions, and one direction
+    is impossible: ~200 players carry an implied debut *after* a season they
+    demonstrably played. Experience can only ever push a debut earlier than the
+    panel proves, so the two are combined with a min.
+    """
+    exp = query_db("SELECT athlete_id, experience_years FROM athletes")
+    exp["athlete_id"] = exp["athlete_id"].astype(panel_first.index.dtype)
+    exp = exp.dropna(subset=["experience_years"]).set_index("athlete_id")
+
+    implied = EXPERIENCE_REF - exp["experience_years"]
+    debut = panel_first.to_frame("panel").join(implied.rename("implied"))
+    return debut.min(axis=1).astype(int)
 
 
 def _positions() -> pd.DataFrame:
@@ -149,10 +223,10 @@ def _positions() -> pd.DataFrame:
         """
         SELECT athlete_id, position_abbr, COUNT(*) AS n
         FROM v_player_games
-        WHERE season_type = 2 AND season BETWEEN ? AND ?
+        WHERE season_type = 2 AND season BETWEEN ? AND ? AND week <= ?
         GROUP BY athlete_id, position_abbr
         """,
-        params=(FIRST_SEASON, LAST_SEASON),
+        params=(FIRST_SEASON, LAST_SEASON, LAST_FANTASY_WEEK),
     )
     modal = (
         per_game.sort_values("n", ascending=False)
@@ -216,18 +290,26 @@ def build_panel() -> pd.DataFrame:
     # correct: there is no trajectory to read.
     df["late_form"] = (df["late_z"] - df["z"]).where(df["games"] > 8, 0.0)
 
+    # Every row built from box scores is a season the player actually played.
+    # `add_missed_seasons` appends rows where he did not, and those carry no
+    # observation of scoring rate - the distinction the filter needs, and one
+    # "has a row" can no longer carry once absences are represented explicitly.
+    df["played"] = True
+
     keep = [
-        "athlete_id", "display_name", "pos", "season", "games", "fp_ppr", "ppg",
-        "fp_var", "z", "z_var", "age", "opp_pg", "late_form", "pass_att_pg",
-        "rush_att_pg", "targets_pg", "pass_yds_pg", "rush_yds_pg", "rec_yds_pg",
-        "td_pg", "var_a", "var_b",
+        "athlete_id", "display_name", "pos", "season", "played", "games",
+        "fp_ppr", "ppg", "fp_var", "z", "z_var", "age", "opp_pg", "late_form",
+        "pass_att_pg", "rush_att_pg", "targets_pg", "pass_yds_pg",
+        "rush_yds_pg", "rec_yds_pg", "td_pg", "var_a", "var_b",
     ]
     df = df[keep].sort_values(["athlete_id", "season"]).reset_index(drop=True)
 
-    # Seasons of experience visible in this window. Left-censored for the 2020
-    # cohort - a 2020 row shows 0 whether the player was a rookie or a
-    # ten-year veteran - so it is only ever used alongside age, which is not.
-    df["seasons_seen"] = df.groupby("athlete_id").cumcount()
+    # Seasons of NFL experience, counted from the player's real debut rather
+    # than from the start of this window, so `seasons_seen == 0` means an actual
+    # rookie season in every year of the panel - which is what the availability
+    # model's rookie indicator is asking.
+    debut = _debut_season(df.groupby("athlete_id")["season"].min())
+    df["seasons_seen"] = df["season"] - df["athlete_id"].map(debut)
 
     return df
 
@@ -275,6 +357,194 @@ def measurement_noise(df: pd.DataFrame) -> pd.DataFrame:
     # should not have to infer.
     df["z_var"] = var_shrunk / (4.0 * df["games"] * df["ppg"].clip(lower=PPG_FLOOR))
 
+    return df
+
+
+def rostered_players() -> set:
+    """Players on an NFL roster or unsigned free agents, as of the snapshot.
+
+    `athletes.active` is 1 only for players currently under contract, so free
+    agents - who in early August are still very much draftable - read 0. Both
+    are included; what is excluded is retired and out-of-league.
+
+    This is a **point-in-time snapshot with no history** (`updated_at` runs
+    2026-07-28 to 08-03). It is therefore usable for deciding who to project and
+    never for deciding who to train on: applied to a past fold it would select
+    the population on who survived, which is the exact bias the box-score player
+    enumeration exists to avoid.
+    """
+    rows = query_db(
+        "SELECT athlete_id FROM athletes WHERE active = 1 OR status = 'Free Agent'"
+    )
+    return set(rows["athlete_id"])
+
+
+def add_missed_seasons(
+    panel: pd.DataFrame,
+    roster_ids: set | None = None,
+    max_missed: int = MAX_MISSED_SEASONS,
+) -> pd.DataFrame:
+    """Append explicit zero-game rows for seasons a player missed entirely.
+
+    Without these, a missed season is simply an absent row, and the two things
+    that follow from it both go unmodelled: the availability model never sees a
+    player *return* from a lost year (every training row is a season played, so
+    `games_frac` never reaches 0 and the coefficient is extrapolating when it
+    matters most), and a player who missed the most recent season cannot be
+    projected at all, because the projection set is "everyone with a row in the
+    cutoff season".
+
+    Two kinds of gap, and they differ in what they are entitled to know.
+
+    **Interior** - a season between two the player appeared in, bounded by
+    appearances *inside this frame*. Purely historical. Because the bound comes
+    from the frame it is given, calling this after truncating to a fold's
+    training seasons keeps it causally exact: a 2023 gap row only appears once
+    the player has been seen again by the cutoff, which is what a drafter would
+    have known.
+
+    **Trailing** - seasons after a player's last appearance, added only for
+    ``roster_ids``, and only when he has missed no more than ``max_missed``.
+    This needs the roster snapshot, so it is projection-only; passing it in a
+    backtest would assert survival the fold cannot know.
+
+    The recency bound is doing real work. ``status = 'Free Agent'`` covers 515
+    of 1,493 athletes - it means "not currently signed", not "between jobs" -
+    so an unbounded rule adds 528 players, 418 of whom last played in 2020-2023
+    and are out of the league in everything but the label. Bounding at one
+    missed season leaves 110: the players who sat out last year and could
+    plausibly be drafted this one, Deshaun Watson and Joe Mixon and Brandon
+    Aiyuk among them. A player who has missed two straight seasons is not a
+    draft consideration, and inventing two years of zero-game rows to say so
+    would tell the availability model something it already knows.
+
+    The rows carry ``played = False`` and no scoring observation. The Kalman
+    filter already propagates a player's ability across a season it cannot
+    observe, widening the variance as it goes, so production is unaffected by
+    construction - these rows exist for the availability half and the projection
+    set.
+    """
+    if panel.empty:
+        return panel
+
+    last_season = int(panel["season"].max())
+    seen = panel.groupby("athlete_id")["season"].agg(["min", "max"])
+    played_at = set(zip(panel["athlete_id"], panel["season"]))
+
+    wanted: list[tuple] = []
+    for athlete_id, (first, last) in seen.iterrows():
+        recent = last_season - int(last) <= max_missed
+        stop = (
+            last_season
+            if roster_ids and athlete_id in roster_ids and recent
+            else last
+        )
+        wanted += [
+            (athlete_id, s)
+            for s in range(int(first) + 1, int(stop) + 1)
+            if (athlete_id, s) not in played_at
+        ]
+    if not wanted:
+        return panel
+
+    gaps = pd.DataFrame(wanted, columns=["athlete_id", "season"])
+
+    # Identity carries over from the player; everything measured is zero or
+    # absent. `z` and `z_var` are placeholders - `played = False` means nothing
+    # downstream reads them - but they must be finite, because 0 games would
+    # otherwise divide to inf in the delta-method variance.
+    ident = panel.drop_duplicates("athlete_id").set_index("athlete_id")
+    for col in ("display_name", "pos", "var_a", "var_b"):
+        gaps[col] = gaps["athlete_id"].map(ident[col])
+
+    gaps["played"] = False
+    for col in ("games", "fp_ppr", "ppg", "opp_pg", "late_form", "z",
+                "pass_att_pg", "rush_att_pg", "targets_pg", "pass_yds_pg",
+                "rush_yds_pg", "rec_yds_pg", "td_pg"):
+        gaps[col] = 0.0
+    gaps["fp_var"] = np.nan
+    gaps["z_var"] = 1.0
+
+    # Age comes from a birth date, so it is known for a season he sat out - the
+    # whole reason the aging curve can carry a player across one.
+    gaps["age"] = _ages(gaps)
+    gaps["seasons_seen"] = gaps["season"] - gaps["athlete_id"].map(
+        _debut_season(panel.groupby("athlete_id")["season"].min())
+    )
+
+    # Align to whatever the caller's frame carries. Anything the gap rows have
+    # no value for - next-season labels, most likely, which the caller rebuilds
+    # afterwards - comes through as NaN rather than raising.
+    gaps = gaps.reindex(columns=panel.columns)
+    gaps["played"] = False
+
+    out = pd.concat([panel, gaps], ignore_index=True)
+    return out.sort_values(["athlete_id", "season"]).reset_index(drop=True)
+
+
+def attach_established(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag each player-season as an established player, from prior seasons only.
+
+    The panel says elite players are a different process, not a tail of the same
+    one. Restricted to pairs where both seasons ran 14+ games - so measurement
+    noise is small and near-identical between groups (mean z_var 0.066 vs
+    0.069) - the upper half of the skill range carries its sqrt-scale ability
+    forward at a slope of 0.87 against 0.60 for the lower half, and does it with
+    22% less residual spread (0.51 against 0.65). It holds in all four
+    positions.
+
+    A single `rho` and `sigma` per position cannot express that. It fits a
+    compromise, and the compromise is wrong in both directions for exactly the
+    players a drafter cares about: too much regression toward the cohort, and
+    intervals too wide. This flag is what lets the two halves have their own.
+
+    **Everything here looks backwards.** The mean is over seasons strictly
+    before the row's own, the count is of seasons already played, and the
+    threshold is a median over the frame it is handed - which, called on a
+    fold's training seasons, contains nothing the fold has not reached. A flag
+    built from a player's own future would hand the model the answer.
+
+    Note this is deliberately *not* the 50-point peak filter. That one removed
+    players from the fit and measured worse: it moved the position baselines and
+    took away the low end that identifies the dropout cliff. Nobody is removed
+    here. They are just no longer forced to share a variance parameter.
+    """
+    df = df.sort_values(["athlete_id", "season"]).reset_index(drop=True)
+
+    played = df["played"] if "played" in df else pd.Series(True, index=df.index)
+    z_played = df["z"].where(played)
+
+    grp = df.groupby("athlete_id")["season"]  # groupby key only; ops below use z
+    by_player = z_played.groupby(df["athlete_id"])
+
+    # Expanding mean and count over seasons *before* this one. `shift(1)` is the
+    # whole causal argument: without it a player's own season sets the flag that
+    # governs how that season is filtered.
+    prior_mean = by_player.apply(lambda s: s.expanding().mean().shift(1))
+    prior_n = by_player.apply(lambda s: s.notna().cumsum().shift(1))
+    prior_mean = prior_mean.reset_index(level=0, drop=True).sort_index()
+    prior_n = prior_n.reset_index(level=0, drop=True).sort_index()
+
+    # Threshold per position, from the frame in hand.
+    bar = df.loc[played].groupby("pos")["z"].median()
+
+    # Experience is the player's real career length, not his tenure inside this
+    # window, so a veteran already 6 years into the league in 2021 counts as
+    # one. Counting panel seasons instead left 2020 and 2021 with *no*
+    # established players at all and cost a year of the transitions this split
+    # has to be identified from - which, on six seasons, is not affordable.
+    #
+    # The panel still has to supply at least one prior season, because the
+    # threshold is on observed scoring and there is nothing to average
+    # otherwise. That is what keeps 2020 empty, correctly: nobody in it has a
+    # prior season on record.
+    df["established"] = (
+        (prior_n.fillna(0) >= 1)
+        & (df["seasons_seen"] >= ESTABLISHED_MIN_SEASONS)
+        & (prior_mean >= df["pos"].map(bar))
+    ).fillna(False).to_numpy()
+
+    del grp
     return df
 
 
