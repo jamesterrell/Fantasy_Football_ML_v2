@@ -12,6 +12,41 @@ Outputs land in `artifacts/`.
 
 ---
 
+## The universe: draftable players only
+
+The model is fit and scored on players who have posted **at least one 50-point
+PPR season** (`MIN_PEAK_FP` in `data.py`). That drops 666 of 1,186 players and
+1,294 of 3,309 player-seasons — a little under 40% of the panel.
+
+This is a decision about what the model is *for*. A player who has never
+cleared 50 points in a season is not draftable in any format, so the difference
+between projecting him at 12 points and at 30 is a distinction nobody acts on;
+spending likelihood on it buys accuracy where accuracy has no decision attached.
+
+Two details make the cut narrower than it sounds:
+
+- **Qualification is a property of the player, not the season.** A player who
+  clears the bar once keeps *every* row he has, including his zero seasons. The
+  decline from productive to nothing is exactly the trajectory the model needs,
+  and cutting it would teach the model that good players stay good.
+- **The label is untouched.** A qualifying player who scores nothing next
+  season still contributes a zero. The filter selects who to model, never what
+  the answer was.
+
+### The filter cannot be applied with hindsight in a backtest
+
+"Had a 50-point season in 2021–2025" is a fact available in 2026 and not
+before. A fold that trains on ≤2021 and predicts 2022 must not use it: it would
+keep the players who were *about to* break out and drop those about to wash
+out, selecting the population on the outcomes being scored. `run_backtest.py`
+therefore runs two modes — `causal`, where a player qualifies only on seasons
+the fold has already seen, and `window`, the literal full-window rule — and the
+gap between them is the size of the hindsight. **`causal` is the honest
+number.** `run_projection.py` is entitled to the full window, because
+projecting 2026 from 2021–2025 uses only seasons that have happened.
+
+---
+
 ## Why a Bayesian model, specifically
 
 Fantasy projection has three features that a point-estimate regression handles
@@ -22,7 +57,9 @@ four games and one who did it over sixteen are not the same evidence, and the
 database says exactly how much noise is in each: the within-season game-to-game
 variance. The Kalman update weights every season by its own measurement
 variance, so the shrinkage is derived rather than hand-tuned. No "minimum games
-played" cutoff appears anywhere in this code.
+played" cutoff appears anywhere in this code — the 50-point filter above selects
+*which players are worth modelling*, and within that set every season a player
+played is used at whatever weight its own noise level earns.
 
 **The answer a fantasy manager needs is a distribution.** "220 points" is less
 useful than "a 90% chance he plays, a median of 210, and a 1-in-20 chance he
@@ -147,6 +184,14 @@ See `artifacts/diagnostics.png` and the results table printed by
   inflates its scoring mean. Worth a season indicator if it ever matters.
 - **Fullbacks are excluded** (the position filter is QB/RB/WR/TE), uniformly
   across seasons.
+- **The 50-point filter cannot see a breakout coming.** A player who has never
+  cleared the bar is outside the universe entirely, so the model has nothing to
+  say about the deep-league flier who posts 180 points out of nowhere. That is
+  the accepted cost of the cut, and it is the one case where the pre-filter
+  model was doing work this one does not.
+- **Three folds, not four.** The panel starts in 2020 and the first fold needs
+  two seasons to learn a transition, so the backtest predicts 2023, 2024 and
+  2025 only.
 - **Availability treats ability as known**, a consequence of the modularisation
   above. It slightly understates uncertainty, small next to the spread the games
   distribution contributes.

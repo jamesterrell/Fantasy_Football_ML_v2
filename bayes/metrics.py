@@ -70,6 +70,41 @@ def coverage_given_played(
     return float(np.mean((y[played] >= lo) & (y[played] <= hi)))
 
 
+def conditional_on_playing(
+    draws: np.ndarray, games_draws: np.ndarray, n_out: int | None = None, seed: int = 0
+):
+    """Re-draw the predictive conditional on the player being in the league.
+
+    Whether a player is in the league next season is mostly *not* a forecasting
+    problem for the person using this: retirements, releases and unsigned free
+    agents are known in August, and a drafter simply does not draft them. Scoring
+    the model against a coin flip it never had to call makes the headline error
+    look worse than the thing being asked of it, and it hides movement in the
+    part that does matter - points, given he is on the field.
+
+    So this keeps only the draws where the simulated player played, and resamples
+    them with replacement to a fixed width so every metric downstream works
+    unchanged. What survives is the model's answer to "how many points, given he
+    is in the league", which is the question a drafter actually poses.
+
+    Rows where no draw has him playing keep their unconditional draws; there is
+    nothing to condition on. Returns ``(draws, mask_of_usable_rows)``.
+    """
+    draws = np.asarray(draws, float)
+    playing = np.asarray(games_draws) > 0
+    n_draws, n_rows = draws.shape
+    n_out = n_draws if n_out is None else n_out
+
+    rng = np.random.default_rng(seed)
+    out = np.empty((n_out, n_rows))
+    usable = playing.any(axis=0)
+
+    for j in range(n_rows):
+        pool = draws[playing[:, j], j] if usable[j] else draws[:, j]
+        out[:, j] = rng.choice(pool, size=n_out, replace=True)
+    return out, usable
+
+
 def pit(draws: np.ndarray, y: np.ndarray, rng=None) -> np.ndarray:
     """Randomised probability integral transform.
 

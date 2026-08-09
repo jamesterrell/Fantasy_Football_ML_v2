@@ -18,8 +18,17 @@ from bayes.metrics import interval_coverage, pit
 
 pd.set_option("display.width", 240)
 
+MODE = "causal"
+
 with open("artifacts/backtest_folds.pkl", "rb") as fh:
     folds = pickle.load(fh)
+
+# The backtest now keys folds by (filter mode, cutoff) and writes several modes
+# into one file. Pooling across modes would double-count the same players under
+# two different universes, so pick one.
+if folds and isinstance(next(iter(folds)), tuple):
+    folds = {k[1]: v for k, v in folds.items() if k[0] == MODE}
+    print(f"[{MODE} filter mode, {len(folds)} folds]\n")
 
 rows = pd.concat([f["rows"] for f in folds.values()], ignore_index=True)
 draws = np.concatenate([f["draws"] for f in folds.values()], axis=1)

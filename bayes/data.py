@@ -45,6 +45,22 @@ VAR_PRIOR_GAMES = 6.0
 # as far less informative than a productive one.
 PPG_FLOOR = 1.0
 
+# ---------------------------------------------------------------- draft universe
+#
+# A player is worth modelling only once he has shown he can post a season total
+# worth a roster spot. Below this bar the question "how many points will he
+# score" has no decision attached to it - he is not draftable at any point in
+# any format - so fitting effort spent separating a 12-point season from a
+# 30-point one is effort spent on a distinction nobody acts on.
+#
+# The bar is on the *season total*, and a player qualifies on his best season,
+# not his average: one 50-point year is enough to make him a name worth
+# projecting, and the sub-50 seasons of a player who cleared it stay in the
+# panel because a decline from productive to nothing is exactly the trajectory
+# the model needs to learn.
+MIN_PEAK_FP = 50.0
+PEAK_WINDOW = (2021, LAST_SEASON)
+
 
 def _season_totals() -> pd.DataFrame:
     """Per (athlete, season) totals, per-game rates, and within-season spread.
@@ -260,6 +276,47 @@ def measurement_noise(df: pd.DataFrame) -> pd.DataFrame:
     df["z_var"] = var_shrunk / (4.0 * df["games"] * df["ppg"].clip(lower=PPG_FLOOR))
 
     return df
+
+
+def qualifying_players(
+    panel: pd.DataFrame,
+    min_peak: float = MIN_PEAK_FP,
+    window: tuple[int, int] = PEAK_WINDOW,
+    through: int | None = None,
+) -> set:
+    """Athlete ids whose best season in the window cleared ``min_peak``.
+
+    ``through`` caps the seasons allowed to establish qualification, and it is
+    the difference between a defensible backtest and a flattering one. Asking
+    "did he ever post a 50-point season in 2021-2025" is a question only
+    answerable in 2026: applied to a fold that predicts 2022 it would keep the
+    players who were *about to* break out and discard the ones who were about
+    to wash out, handing the model a universe selected on the very outcomes it
+    is being scored against. Passing ``through=cutoff`` restricts the evidence
+    to seasons that had already happened, which is the same rule a drafter
+    could have applied at the time.
+
+    Qualification is a property of the player, not the season, so a qualifying
+    player keeps every row he has - including the seasons where he scored
+    nothing, which are real outcomes for a name that was on draft boards.
+    """
+    lo, hi = window
+    if through is not None:
+        hi = min(hi, through)
+    seen = panel[panel["season"].between(lo, hi)]
+    peak = seen.groupby("athlete_id")["fp_ppr"].max()
+    return set(peak.index[peak >= min_peak])
+
+
+def apply_peak_filter(
+    panel: pd.DataFrame,
+    min_peak: float = MIN_PEAK_FP,
+    window: tuple[int, int] = PEAK_WINDOW,
+    through: int | None = None,
+) -> pd.DataFrame:
+    """Drop every player who never cleared ``min_peak`` in a single season."""
+    keep = qualifying_players(panel, min_peak=min_peak, window=window, through=through)
+    return panel[panel["athlete_id"].isin(keep)].reset_index(drop=True)
 
 
 def attach_next_season(panel: pd.DataFrame) -> pd.DataFrame:

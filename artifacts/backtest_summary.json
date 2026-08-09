@@ -1,75 +1,279 @@
 {
-  "per_fold_rmse": {
-    "bayes": {
-      "2023": 57.896,
-      "2024": 59.332,
-      "2025": 59.252
+  "min_peak_fp": 50.0,
+  "modes": {
+    "causal": {
+      "per_fold_rmse": {
+        "bayes (all-players fit)": {
+          "2023": 66.06,
+          "2024": 69.872,
+          "2025": 71.325
+        },
+        "bayes (all-players fit) | in the league": {
+          "2023": 69.943,
+          "2024": 72.987,
+          "2025": 69.628
+        },
+        "bayes (filtered fit)": {
+          "2023": 69.482,
+          "2024": 70.846,
+          "2025": 71.245
+        },
+        "bayes | in the league": {
+          "2023": 72.776,
+          "2024": 73.35,
+          "2025": 69.637
+        },
+        "last season ppg x 17": {
+          "2023": 87.989,
+          "2024": 90.655,
+          "2025": 94.131
+        },
+        "position mean": {
+          "2023": 96.642,
+          "2024": 96.64,
+          "2025": 100.652
+        },
+        "repeat last season": {
+          "2023": 72.287,
+          "2024": 75.709,
+          "2025": 80.161
+        },
+        "repeat last season | in the league": {
+          "2023": 73.044,
+          "2024": 79.405,
+          "2025": 78.134
+        }
+      },
+      "averaged": {
+        "n": {
+          "bayes (all-players fit)": 344.0,
+          "bayes (filtered fit)": 344.0,
+          "bayes (all-players fit) | in the league": 282.3333,
+          "bayes | in the league": 282.3333,
+          "repeat last season": 344.0,
+          "repeat last season | in the league": 282.3333,
+          "last season ppg x 17": 344.0,
+          "position mean": 344.0
+        },
+        "rmse": {
+          "bayes (all-players fit)": 69.0859,
+          "bayes (filtered fit)": 70.5242,
+          "bayes (all-players fit) | in the league": 70.8528,
+          "bayes | in the league": 71.9209,
+          "repeat last season": 76.0523,
+          "repeat last season | in the league": 76.8608,
+          "last season ppg x 17": 90.9252,
+          "position mean": 97.9781
+        },
+        "mae": {
+          "bayes (all-players fit)": 50.4129,
+          "bayes (filtered fit)": 53.0421,
+          "bayes (all-players fit) | in the league": 54.2413,
+          "bayes | in the league": 55.317,
+          "repeat last season": 55.9859,
+          "repeat last season | in the league": 57.1511,
+          "last season ppg x 17": 69.2211,
+          "position mean": 84.0001
+        },
+        "crps": {
+          "bayes (all-players fit)": 35.4165,
+          "bayes (filtered fit)": 36.7216,
+          "bayes (all-players fit) | in the league": 38.1248,
+          "bayes | in the league": 38.8732,
+          "repeat last season": 55.9859,
+          "repeat last season | in the league": 57.1511,
+          "last season ppg x 17": 69.2211,
+          "position mean": 84.0001
+        },
+        "cov50": {
+          "bayes (all-players fit)": 0.5856,
+          "bayes (filtered fit)": 0.5382,
+          "bayes (all-players fit) | in the league": 0.5297,
+          "bayes | in the league": 0.4858,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "cov80": {
+          "bayes (all-players fit)": 0.8598,
+          "bayes (filtered fit)": 0.853,
+          "bayes (all-players fit) | in the league": 0.7964,
+          "bayes | in the league": 0.7691,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "cov90": {
+          "bayes (all-players fit)": 0.9417,
+          "bayes (filtered fit)": 0.9493,
+          "bayes (all-players fit) | in the league": 0.9004,
+          "bayes | in the league": 0.863,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "spearman": {
+          "bayes (all-players fit)": 0.6788,
+          "bayes (filtered fit)": 0.6702,
+          "bayes (all-players fit) | in the league": 0.6397,
+          "bayes | in the league": 0.6344,
+          "repeat last season": 0.6803,
+          "repeat last season | in the league": 0.6588,
+          "last season ppg x 17": 0.645,
+          "position mean": 0.0879
+        },
+        "bias": {
+          "bayes (all-players fit)": 1.0701,
+          "bayes (filtered fit)": 10.1648,
+          "bayes (all-players fit) | in the league": -0.1388,
+          "bayes | in the league": 8.6801,
+          "repeat last season": 21.2236,
+          "repeat last season | in the league": 14.8067,
+          "last season ppg x 17": 47.7695,
+          "position mean": 21.2236
+        }
+      },
+      "calibration_slope": 1.1292549144222819
     },
-    "last season ppg x 17": {
-      "2023": 75.608,
-      "2024": 77.233,
-      "2025": 80.697
-    },
-    "position mean": {
-      "2023": 86.965,
-      "2024": 89.267,
-      "2025": 89.332
-    },
-    "repeat last season": {
-      "2023": 61.899,
-      "2024": 63.481,
-      "2025": 65.97
+    "window": {
+      "per_fold_rmse": {
+        "bayes (all-players fit)": {
+          "2023": 70.437,
+          "2024": 68.923,
+          "2025": 71.159
+        },
+        "bayes (all-players fit) | in the league": {
+          "2023": 73.515,
+          "2024": 71.21,
+          "2025": 69.159
+        },
+        "bayes (filtered fit)": {
+          "2023": 71.092,
+          "2024": 68.975,
+          "2025": 70.662
+        },
+        "bayes | in the league": {
+          "2023": 73.756,
+          "2024": 70.969,
+          "2025": 68.62
+        },
+        "last season ppg x 17": {
+          "2023": 87.916,
+          "2024": 88.72,
+          "2025": 93.28
+        },
+        "position mean": {
+          "2023": 92.959,
+          "2024": 93.596,
+          "2025": 98.677
+        },
+        "repeat last season": {
+          "2023": 76.803,
+          "2024": 74.667,
+          "2025": 79.85
+        },
+        "repeat last season | in the league": {
+          "2023": 78.155,
+          "2024": 77.977,
+          "2025": 77.794
+        }
+      },
+      "averaged": {
+        "n": {
+          "bayes (all-players fit)": 366.3333,
+          "bayes (filtered fit)": 366.3333,
+          "bayes | in the league": 304.3333,
+          "bayes (all-players fit) | in the league": 304.3333,
+          "repeat last season": 366.3333,
+          "repeat last season | in the league": 304.3333,
+          "last season ppg x 17": 366.3333,
+          "position mean": 366.3333
+        },
+        "rmse": {
+          "bayes (all-players fit)": 70.1729,
+          "bayes (filtered fit)": 70.2431,
+          "bayes | in the league": 71.115,
+          "bayes (all-players fit) | in the league": 71.2944,
+          "repeat last season": 77.1068,
+          "repeat last season | in the league": 77.9754,
+          "last season ppg x 17": 89.9723,
+          "position mean": 95.0772
+        },
+        "mae": {
+          "bayes (all-players fit)": 51.9253,
+          "bayes (filtered fit)": 52.6507,
+          "bayes | in the league": 54.7295,
+          "bayes (all-players fit) | in the league": 55.0269,
+          "repeat last season": 56.6918,
+          "repeat last season | in the league": 57.9007,
+          "last season ppg x 17": 68.2313,
+          "position mean": 80.4727
+        },
+        "crps": {
+          "bayes (all-players fit)": 36.5552,
+          "bayes (filtered fit)": 36.6411,
+          "bayes | in the league": 38.4533,
+          "bayes (all-players fit) | in the league": 38.7213,
+          "repeat last season": 56.6918,
+          "repeat last season | in the league": 57.9007,
+          "last season ppg x 17": 68.2313,
+          "position mean": 80.4727
+        },
+        "cov50": {
+          "bayes (all-players fit)": 0.5609,
+          "bayes (filtered fit)": 0.5477,
+          "bayes | in the league": 0.4967,
+          "bayes (all-players fit) | in the league": 0.5125,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "cov80": {
+          "bayes (all-players fit)": 0.8395,
+          "bayes (filtered fit)": 0.8576,
+          "bayes | in the league": 0.7618,
+          "bayes (all-players fit) | in the league": 0.7789,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "cov90": {
+          "bayes (all-players fit)": 0.9256,
+          "bayes (filtered fit)": 0.9435,
+          "bayes | in the league": 0.8743,
+          "bayes (all-players fit) | in the league": 0.8873,
+          "repeat last season": NaN,
+          "repeat last season | in the league": NaN,
+          "last season ppg x 17": NaN,
+          "position mean": NaN
+        },
+        "spearman": {
+          "bayes (all-players fit)": 0.6329,
+          "bayes (filtered fit)": 0.6361,
+          "bayes | in the league": 0.605,
+          "bayes (all-players fit) | in the league": 0.6044,
+          "repeat last season": 0.6289,
+          "repeat last season | in the league": 0.6154,
+          "last season ppg x 17": 0.6074,
+          "position mean": 0.1154
+        },
+        "bias": {
+          "bayes (all-players fit)": -2.6315,
+          "bayes (filtered fit)": 6.5825,
+          "bayes | in the league": 5.295,
+          "bayes (all-players fit) | in the league": -3.8653,
+          "repeat last season": 15.9882,
+          "repeat last season | in the league": 9.0362,
+          "last season ppg x 17": 42.3952,
+          "position mean": 15.9882
+        }
+      },
+      "calibration_slope": 1.070987554610998
     }
-  },
-  "averaged": {
-    "rmse": {
-      "bayes": 58.8266,
-      "repeat last season": 63.7833,
-      "last season ppg x 17": 77.8462,
-      "position mean": 88.5214
-    },
-    "mae": {
-      "bayes": 37.8718,
-      "repeat last season": 41.776,
-      "last season ppg x 17": 54.0971,
-      "position mean": 73.5671
-    },
-    "crps": {
-      "bayes": 27.0361,
-      "repeat last season": 41.776,
-      "last season ppg x 17": 54.0971,
-      "position mean": 73.5671
-    },
-    "cov50": {
-      "bayes": 0.6298,
-      "repeat last season": NaN,
-      "last season ppg x 17": NaN,
-      "position mean": NaN
-    },
-    "cov80": {
-      "bayes": 0.8758,
-      "repeat last season": NaN,
-      "last season ppg x 17": NaN,
-      "position mean": NaN
-    },
-    "cov90": {
-      "bayes": 0.9407,
-      "repeat last season": NaN,
-      "last season ppg x 17": NaN,
-      "position mean": NaN
-    },
-    "spearman": {
-      "bayes": 0.6828,
-      "repeat last season": 0.69,
-      "last season ppg x 17": 0.649,
-      "position mean": 0.0626
-    },
-    "bias": {
-      "bayes": 0.7754,
-      "repeat last season": 12.529,
-      "last season ppg x 17": 35.3417,
-      "position mean": 12.529
-    }
-  },
-  "calibration_slope": 1.0608210843254933
+  }
 }

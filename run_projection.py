@@ -18,7 +18,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bayes.data import LAST_SEASON, attach_next_season, build_panel
+from bayes.data import (
+    LAST_SEASON,
+    MIN_PEAK_FP,
+    apply_peak_filter,
+    attach_next_season,
+    build_panel,
+    qualifying_players,
+)
 from bayes.figures import model_structure, projection_fan
 from bayes.predictive import fit_fold
 
@@ -50,10 +57,43 @@ def positional_rank_probs(draws: np.ndarray, pos: np.ndarray) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def run(quick: bool = False) -> pd.DataFrame:
+def run(
+    quick: bool = False,
+    peak_filter: bool = True,
+    train_universe: str = "all",
+) -> pd.DataFrame:
+    """Fit through ``LAST_SEASON`` and project the season after it.
+
+    ``peak_filter`` restricts the *output table* to the draftable universe -
+    players with a 50-point season behind them. ``train_universe`` controls
+    whether the model is also *fit* on only those players, and the backtest says
+    it should not be: training on the filtered panel cost 1.4 RMSE and pushed
+    the projection bias from +1.1 to +10.2 points on the very players the filter
+    keeps. Cutting the bottom off the panel moves the position baselines and the
+    shrinkage target up with it, so everyone who survives gets over-projected -
+    and it removes the low end that identifies the dropout cliff near
+    replacement level, which is what the skill-squared term in the availability
+    model exists to fit.
+
+    So: filter what you read, not what the model learns from.
+    """
     OUT.mkdir(exist_ok=True)
     panel = attach_next_season(build_panel())
     target = LAST_SEASON + 1
+
+    # The draftable universe. Unlike a backtest fold this one is entitled to the
+    # whole window: projecting 2026 from 2021-2025 uses only seasons that have
+    # already happened.
+    draftable = qualifying_players(panel) if peak_filter else None
+    if peak_filter:
+        print(
+            f"draftable universe (>= {MIN_PEAK_FP:.0f} pts in a season, "
+            f"2021-{LAST_SEASON}): {len(draftable):,} of "
+            f"{panel['athlete_id'].nunique():,} players"
+        )
+    if train_universe == "filtered":
+        panel = apply_peak_filter(panel)
+        print(f"training on the filtered panel only: {len(panel):,} rows")
 
     warmup, samples, chains = (300, 400, 2) if quick else (1000, 1000, 4)
     proj = fit_fold(
@@ -78,6 +118,15 @@ def run(quick: bool = False) -> pd.DataFrame:
     ranks["athlete_id"] = proj.rows["athlete_id"].to_numpy()
 
     table = proj.summary().merge(ranks, on="athlete_id", how="left")
+
+    # Drop the undraftable players from the output, after the fit rather than
+    # before it. Positional rank probabilities are computed above on the full
+    # field on purpose: a player reaches the top 24 by outscoring everyone at
+    # his position, including the ones who are not worth drafting themselves.
+    if draftable is not None:
+        before = len(table)
+        table = table[table["athlete_id"].isin(draftable)].reset_index(drop=True)
+        print(f"\noutput restricted to draftable players: {len(table):,} of {before:,}")
 
     cols = [
         "display_name", "pos", "age", "games", "fp_ppr", "proj_mean", "proj_median",
@@ -136,4 +185,21 @@ def run(quick: bool = False) -> pd.DataFrame:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
-    run(quick=ap.parse_args().quick)
+    ap.add_argument(
+        "--no-peak-filter",
+        action="store_true",
+        help="output the whole league, not just the draftable universe",
+    )
+    ap.add_argument(
+        "--train-universe",
+        choices=("all", "filtered"),
+        default="all",
+        help="fit on every player (default) or only the draftable ones. The "
+             "backtest says 'all' is better even for the draftable players.",
+    )
+    args = ap.parse_args()
+    run(
+        quick=args.quick,
+        peak_filter=not args.no_peak_filter,
+        train_universe=args.train_universe,
+    )
