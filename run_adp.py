@@ -116,12 +116,17 @@ if __name__ == "__main__":
     # Positive = the room lets him fall past where his value says to take him.
     out["value"] = out.adp_rank - out.vbd_rank
 
+    # Ordered for reading left to right at a draft: who he is, where he sits on
+    # his team, when the room takes him, what he is worth, and how wide the
+    # outcome could be. p05/p95 are the 5th and 95th percentiles of the same
+    # 4,000 simulations everything else is counted from.
     cols = [c for c in ("vbd_rank", "display_name", "pos", "pos_rank", "team",
+                        "depth_rank", "status",
                         "adp", "round", "pick_in_round", "value",
-                        "proj_mean", "proj_median",
+                        "proj_mean", "proj_median", "p05", "p95",
                         "vbd", "vbd_floor", "risk_shift",
                         "p_beat_replacement", "p_top5_pos", "p_starter",
-                        "exp_games", "status", "pct_owned")
+                        "exp_games", "pct_owned")
             if c in out.columns]
     dest = OUT / f"draft_board_{a.season}_{a.teams}team.csv"
     out.sort_values("vbd_rank")[cols].to_csv(dest, index=False)

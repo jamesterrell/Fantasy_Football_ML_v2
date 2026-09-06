@@ -64,7 +64,14 @@ applied to a point estimate.
 |---|---|
 | `vbd_rank` | **The draft order this board recommends.** 1 is the best pick available. |
 | `display_name`, `pos`, `team` | Player, position, and the team he is on for the upcoming season. |
-| `pos_rank` | His rank within his own position — RB1, WR7, and so on. |
+| `pos_rank` | His rank **on this board** within his own position — RB1, WR7, and so on. |
+| `depth_rank` | His rank **on his real NFL team's depth chart** at his position, as of August. 1 is the starter. **Blank means he is not listed on any depth chart** — which is a warning sign, not missing data: those players average under 3 games played. |
+
+Two different rankings sit next to each other and are easy to confuse:
+`pos_rank` is where *this board* puts him among players at his position;
+`depth_rank` is where *his actual coach* puts him. A player who is WR2 on
+this board and WR1 on his team is a very different proposition from one who
+is WR2 on both.
 
 ### When he will actually go
 
@@ -80,6 +87,7 @@ applied to a point estimate.
 |---|---|
 | `proj_mean` | Projected PPR points for the season, averaged across all 4,000 simulations. |
 | `proj_median` | **The coin-flip number.** He beats this half the time. Not the same as the mean — see the warnings below. |
+| `p05`, `p95` | **The realistic range.** He lands between these in 9 seasons out of 10 — `p05` is a disaster year, `p95` is everything going right. The width is the honest measure of how much of a gamble the pick is: McCaffrey spans 73–496, which is most of the board. |
 | `vbd` | **Value over replacement.** Points above the player you could have had for free at his position, which is what makes a quarterback and a running back comparable. `vbd_rank` sorts on this. |
 | `vbd_floor` | The same, computed from a bad-but-not-disastrous outcome (25th percentile). Sort by this when you need a reliable weekly starter. |
 | `risk_shift` | How much safer or riskier he is than his headline rank suggests. **Negative means his value depends on upside**; positive means he is steadier than he looks. |
