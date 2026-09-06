@@ -19,7 +19,8 @@ contributes anyway.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 
 import jax
 import jax.numpy as jnp
@@ -28,12 +29,13 @@ import pandas as pd
 
 from bayes.availability import design_matrix, fit_availability, predict_games
 from bayes.data import (
+    PRESEASON_COLUMNS,
     PPG_FLOOR,
-    SEASON_GAMES,
     add_missed_seasons,
     attach_established,
     attach_next_season,
     measurement_noise,
+    season_length,
 )
 from bayes.production import (
     POS_INDEX,
@@ -54,6 +56,9 @@ class Projection:
     production_mcmc: object = None
     availability_mcmc: object = None
     spline_spec: dict = None     # aging-curve basis, needed to redraw the curve
+    # Wall-clock seconds for each stage of the fold, so a run reports where the
+    # time went rather than only how long it took.
+    timings: dict = field(default_factory=dict)
 
     def summary(self) -> pd.DataFrame:
         """Point projection and predictive quantiles, per player."""
@@ -95,8 +100,18 @@ def fit_fold(
     seed: int = 0,
     progress: bool = False,
     roster_ids: set | None = None,
+    inference_production: str = "nuts",
+    inference_availability: str = "nuts",
 ) -> Projection:
     """Train on seasons <= ``cutoff``, project season ``cutoff + 1``.
+
+    ``inference_production`` and ``inference_availability`` are independent on
+    purpose. The two halves are different shapes - the production posterior is a
+    marginal over ~56 hyperparameters with the abilities integrated out by the
+    Kalman filter, while the availability half carries non-centred scales that
+    can pile up against zero - so there is no reason to assume a Gaussian
+    approximation is equally good for both. Being able to run ``laplace`` on one
+    and ``nuts`` on the other is the point.
 
     Nothing from season ``cutoff + 1`` or later touches either fit: the panel is
     truncated first, the aging spline is built on the truncated ages, and the
@@ -111,6 +126,8 @@ def fit_fold(
     # Refit the measurement-variance law on the training seasons only. It is a
     # minor nuisance parameter, but a backtest is only worth running if nothing
     # from the future reaches it.
+    timings: dict = {}
+    t_prep = time.perf_counter()
     train = measurement_noise(panel[panel["season"] <= cutoff].copy())
 
     # Missed seasons become explicit rows, and this happens *after* truncation
@@ -136,6 +153,18 @@ def fit_fold(
     )
     for col in ("next_games", "next_fp_ppr"):
         train[col] = train[col].fillna(filled[col])
+    # The preseason columns have to be carried across too. Rows invented by
+    # `add_missed_seasons` do not exist in the panel the caller attached context
+    # to - a player who sat out last season has no row to attach it to - so they
+    # arrive with no roster status at all. Left alone they read as "unknown",
+    # which `design_matrix` treats as on-a-roster, and the projection then hands
+    # a real number to players nobody employs: on the 2026 board that was
+    # Brandon Aiyuk at 33 points and Joe Mixon at 31, both unsigned.
+    for col in PRESEASON_COLUMNS:
+        if col in filled.columns:
+            train[col] = (
+                train[col].fillna(filled[col]) if col in train.columns else filled[col]
+            )
 
     # Established status, from prior seasons only and from this fold's frame
     # only - so the median it thresholds against contains nothing the fold has
@@ -150,46 +179,75 @@ def fit_fold(
     # -ahead forecast, aged correctly and with process noise already added.
     seasons = np.arange(train["season"].min(), cutoff + 2)
     arr = build_arrays(train, seasons=seasons, use_inputs=use_inputs)
+    timings["prep_s"] = time.perf_counter() - t_prep
 
+    # Both halves must return the same number of draws, because the projection
+    # pairs them one-for-one rather than crossing them. NUTS returns
+    # ``num_samples * num_chains``; Laplace returns whatever it is asked for and
+    # its draws are nearly free, so it is asked for the same total. Without this
+    # a mixed run (laplace production, NUTS availability) fails the shape assert
+    # below - and a matched pair of counts is also what keeps a Laplace fold
+    # comparable to a NUTS fold at the same Monte Carlo resolution.
+    n_draws = num_samples * num_chains
+
+    t0 = time.perf_counter()
     prod = fit_production(
         arr,
         use_inputs=use_inputs,
         num_warmup=num_warmup,
-        num_samples=num_samples,
+        num_samples=n_draws if inference_production == "laplace" else num_samples,
         num_chains=num_chains,
         seed=seed,
         progress=progress,
+        inference=inference_production,
     )
+    timings["production_fit_s"] = time.perf_counter() - t0
     post = prod.get_samples()
+    t0 = time.perf_counter()
     state, state_var, level = filtered_states(arr, post, use_inputs=use_inputs)
     state = np.asarray(state)
     state_var = np.asarray(state_var)
     level = np.asarray(level)
+    timings["filtered_states_s"] = time.perf_counter() - t0
 
     # ------------------------------------------------ availability training set
     # Every transition whose outcome is known by the cutoff. The skill covariate
     # is the filtered estimate at the row's own season, which by construction
     # used no season after it.
     avail_rows = train[train["season"] < cutoff].copy()
+    t0 = time.perf_counter()
     avail_skill = _skill_at_rows(avail_rows, arr.players, seasons, level, state)
     X_train, ref = design_matrix(avail_rows, avail_skill)
+    timings["design_train_s"] = time.perf_counter() - t0
     pos_train = avail_rows["pos"].map(POS_INDEX).to_numpy()
 
     train_seasons = np.sort(avail_rows["season"].unique())
     season_idx = np.searchsorted(train_seasons, avail_rows["season"].to_numpy())
 
+    # Slots above the first game, for the season each row's outcome lands in.
+    # 14 before 2021 and 15 after: a beta-binomial with the wrong ceiling would
+    # read every complete 2016-2020 season as one game short and push `p` down
+    # for the whole era.
+    n_slots_train = (
+        avail_rows["season"].add(1).map(season_length).to_numpy(float) - 1.0
+    )
+
+    t0 = time.perf_counter()
     avail = fit_availability(
         X_train,
         pos_train,
         season_idx,
         len(train_seasons),
         avail_rows["next_games"].to_numpy(),
+        n_slots_train,
         num_warmup=num_warmup,
-        num_samples=num_samples,
+        num_samples=n_draws if inference_availability == "laplace" else num_samples,
         num_chains=num_chains,
         seed=seed + 1,
         progress=progress,
+        inference=inference_availability,
     )
+    timings["availability_fit_s"] = time.perf_counter() - t0
     avail_post = avail.get_samples()
 
     # ------------------------------------------------------------ project rows
@@ -208,14 +266,21 @@ def fit_fold(
     # hand the fitted coefficients a compressed version of the variable they
     # were fit on, flattening exactly the dropout gradient the skill terms exist
     # to capture.
+    t0 = time.perf_counter()
     pred_skill = _skill_at_rows(rows, arr.players, seasons, level, state)
     X_pred, _ = design_matrix(rows, pred_skill, ref=ref)
+    timings["design_pred_s"] = time.perf_counter() - t0
     pos_pred = rows["pos"].map(POS_INDEX).to_numpy()
 
     key = jax.random.PRNGKey(seed + 2)
     k_games, k_theta, k_obs = jax.random.split(key, 3)
 
-    games = np.asarray(predict_games(avail_post, X_pred, pos_pred, k_games))
+    target_games = season_length(cutoff + 1)
+    t0 = time.perf_counter()
+    games = np.asarray(
+        predict_games(avail_post, X_pred, pos_pred, k_games, target_games - 1)
+    )
+    timings["predict_games_s"] = time.perf_counter() - t0
 
     draws, rows_n = theta_mean.shape
     # Match the availability draws to the production draws one-for-one. Both
@@ -230,6 +295,7 @@ def fit_fold(
         * np.asarray(jax.random.normal(k_theta, (draws, rows_n)))
     )
 
+    t0 = time.perf_counter()
     total = _realise_season(
         ability,
         games,
@@ -238,7 +304,9 @@ def fit_fold(
         np.asarray(post["lam"]),
         pos_pred,
         k_obs,
+        target_games,
     )
+    timings["realise_s"] = time.perf_counter() - t0
 
     return Projection(
         rows=rows,
@@ -248,10 +316,11 @@ def fit_fold(
         production_mcmc=prod,
         availability_mcmc=avail,
         spline_spec=arr.spline_spec,
+        timings=timings,
     )
 
 
-def _realise_season(ability, games, rows, kappa, lam, pos_idx, key):
+def _realise_season(ability, games, rows, kappa, lam, pos_idx, key, season_games):
     """Turn latent ability and a games count into a realised season total.
 
     Two things happen here that a "projected points per game times projected
@@ -273,7 +342,10 @@ def _realise_season(ability, games, rows, kappa, lam, pos_idx, key):
     var_b = rows["var_b"].to_numpy()[None, :]
 
     g = np.maximum(games, 1)                               # avoid 0-division; masked below
-    ability = ability + lam[:, pos_idx] * (g - SEASON_GAMES) / SEASON_GAMES
+    # `season_games` is the length of the season being projected, which is what
+    # "a full season" means for this draw - not the length of the seasons the
+    # model was fit on.
+    ability = ability + lam[:, pos_idx] * (g - season_games) / season_games
 
     mu = np.maximum(ability, 0.0) ** 2                     # latent points per game
 

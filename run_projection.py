@@ -22,6 +22,7 @@ from bayes.data import (
     LAST_SEASON,
     MAX_MISSED_SEASONS,
     MIN_PEAK_FP,
+    PEAK_WINDOW,
     apply_peak_filter,
     attach_next_season,
     build_panel,
@@ -60,9 +61,12 @@ def positional_rank_probs(draws: np.ndarray, pos: np.ndarray) -> pd.DataFrame:
 
 
 def run(
+    out_dir=None,
     quick: bool = False,
     peak_filter: bool = True,
     train_universe: str = "all",
+    inference_production: str = "nuts",
+    inference_availability: str = "nuts",
 ) -> pd.DataFrame:
     """Fit through ``LAST_SEASON`` and project the season after it.
 
@@ -79,18 +83,22 @@ def run(
 
     So: filter what you read, not what the model learns from.
     """
-    OUT.mkdir(exist_ok=True)
+    # Written somewhere other than artifacts/ when asked, so a speculative
+    # refit cannot overwrite the board someone is about to draft from.
+    global OUT
+    OUT = Path(out_dir) if out_dir else Path(__file__).parent / "artifacts"
+    OUT.mkdir(parents=True, exist_ok=True)
     panel = attach_next_season(build_panel())
     target = LAST_SEASON + 1
 
     # The draftable universe. Unlike a backtest fold this one is entitled to the
-    # whole window: projecting 2026 from 2021-2025 uses only seasons that have
+    # whole window: projecting 2026 from the panel uses only seasons that have
     # already happened.
     draftable = qualifying_players(panel) if peak_filter else None
     if peak_filter:
         print(
             f"draftable universe (>= {MIN_PEAK_FP:.0f} pts in a season, "
-            f"2021-{LAST_SEASON}): {len(draftable):,} of "
+            f"{PEAK_WINDOW[0]}-{LAST_SEASON}): {len(draftable):,} of "
             f"{panel['athlete_id'].nunique():,} players"
         )
     if train_universe == "filtered":
@@ -129,6 +137,14 @@ def run(
         num_chains=chains,
         progress=True,
         roster_ids=roster,
+        inference_production=inference_production,
+        inference_availability=inference_availability,
+    )
+    print(
+        "\nfit stages: "
+        + "  ".join(f"{k}={v:.1f}s" for k, v in proj.timings.items())
+        + f"  (production={inference_production}, "
+        f"availability={inference_availability})"
     )
 
     print("\n=== production model ===")
@@ -154,12 +170,22 @@ def run(
         table = table[table["athlete_id"].isin(draftable)].reset_index(drop=True)
         print(f"\noutput restricted to draftable players: {len(table):,} of {before:,}")
 
+    # Preseason context travels into the output because a projection is not
+    # actionable without it. A player at 8 points is a different decision if he
+    # is a healthy third-stringer than if he is unsigned in September, and those
+    # two look identical in a column of numbers.
+    table = table.rename(columns={
+        "next_team": "team", "next_status": "status",
+        "next_depth_rank": "depth_rank",
+    })
     cols = [
-        "display_name", "pos", "age", "games", "fp_ppr", "proj_mean", "proj_median",
+        "athlete_id",
+        "display_name", "pos", "team", "status", "depth_rank",
+        "age", "games", "fp_ppr", "proj_mean", "proj_median",
         "p05", "p25", "p75", "p95", "exp_games", "p_misses_season", "proj_ppg",
         "p_starter", "exp_pos_rank",
     ]
-    table = table[cols]
+    table = table[[c for c in cols if c in table.columns]]
 
     table.insert(0, "rank", np.arange(1, len(table) + 1))
     table.to_csv(OUT / f"projections_{target}.csv", index=False)
@@ -211,6 +237,8 @@ def run(
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--out", default=None,
+                    help="directory for outputs; defaults to artifacts/")
     ap.add_argument(
         "--no-peak-filter",
         action="store_true",
@@ -223,9 +251,23 @@ if __name__ == "__main__":
         help="fit on every player (default) or only the draftable ones. The "
              "backtest says 'all' is better even for the draftable players.",
     )
+    ap.add_argument(
+        "--inference", choices=("nuts", "laplace"), default="nuts",
+        help="inference for both halves. The projection is the artifact people "
+             "draft from, so it is the one place worth paying for NUTS.",
+    )
+    ap.add_argument(
+        "--inference-production", choices=("nuts", "laplace"), default=None,
+    )
+    ap.add_argument(
+        "--inference-availability", choices=("nuts", "laplace"), default=None,
+    )
     args = ap.parse_args()
     run(
+        out_dir=args.out,
         quick=args.quick,
         peak_filter=not args.no_peak_filter,
         train_universe=args.train_universe,
+        inference_production=args.inference_production or args.inference,
+        inference_availability=args.inference_availability or args.inference,
     )

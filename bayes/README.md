@@ -170,18 +170,31 @@ See `artifacts/diagnostics.png` and the results table printed by
 
 ## Known limits
 
-- **Six seasons, one league.** 2020–2025 is all the database holds at usable
-  coverage; earlier seasons have 1–49 players and are excluded. Five transitions
-  is thin for estimating a season random effect, and the aging curve is
-  identified mostly cross-sectionally.
+- **Ten seasons, but not one league.** The panel is 2016–2025 (5,385
+  player-seasons, 1,633 players); earlier seasons hold 1–7 players and are
+  excluded. Nine transitions now estimate the season random effect. The cost is
+  that stationarity is a live assumption rather than a shrug — 2016 and 2025
+  differ in passing environment, RB committee usage, and schedule length — and a
+  season random effect absorbs level shifts, not changed *relationships*.
+  Whether `rho`, `sigma_u` and the aging curve differ pre- and post-2021 is
+  untested.
+- **Season length differs by era.** After the final scheduled week is dropped
+  (see `data.py`), a season is **15 games in 2016–2020 and 16 from 2021 on**.
+  `SEASON_GAMES = 16` now means only "the season being projected"; historical
+  rows carry their own `season_games` and `games_frac`, and the availability
+  model's beta-binomial ceiling is passed in per row.
+- **Older seasons under-report marginal stat lines.** The receiving/passing yard
+  identity reconciles at a median of 1.00 in all ten seasons, but the share of
+  team-games missing something runs ~29–36% for 2016–20 against ~14–18% for
+  2023–25. Upstream and unfixable; the interpretive consequence is that an era
+  or season term partly measures completeness, not football, and it bites
+  hardest on the availability model and the replacement-level dropout cliff.
 - **No team context.** Offensive environment, depth chart and target competition
   are not in the model, largely because a player's *next* season team is unknown
   in August. This is the biggest single source of missable signal.
 - **Rookies are cold-started from age and position alone.** No draft capital or
   college production is available in the database, so a first-year player gets
   the positional prior for his age and a wide interval — honest, but not sharp.
-- **The 2021 season under-reports scoreless appearances** upstream, which
-  inflates its scoring mean. Worth a season indicator if it ever matters.
 - **Fullbacks are excluded** (the position filter is QB/RB/WR/TE), uniformly
   across seasons.
 - **The 50-point filter cannot see a breakout coming.** A player who has never
@@ -189,9 +202,16 @@ See `artifacts/diagnostics.png` and the results table printed by
   say about the deep-league flier who posts 180 points out of nowhere. That is
   the accepted cost of the cut, and it is the one case where the pre-filter
   model was doing work this one does not.
-- **Three folds, not four.** The panel starts in 2020 and the first fold needs
-  two seasons to learn a transition, so the backtest predicts 2023, 2024 and
-  2025 only.
+- **Four development folds, and 2025 is sealed.** `run_backtest.py` predicts
+  2021, 2022, 2023 and 2024 from cutoffs 2020–2023, and truncates the panel at
+  2024 so the held-out season is absent rather than merely unscored. Scoring it
+  requires `--final`.
+- **Debut inference is only as good as the snapshot.** `experience_years` is
+  frozen at a player's last active season, so `EXPERIENCE_REF - experience_years`
+  is right for active players (median error 0, 74% exact) and meaningless for
+  retired ones (median +4, 96% impossible). The `min` floor absorbs it, at the
+  price of pinning a retired veteran's debut to his first *panel* season: ~111
+  players are older than 25.5 in the season they are labelled a rookie.
 - **Availability treats ability as known**, a consequence of the modularisation
   above. It slightly understates uncertainty, small next to the spread the games
   distribution contributes.

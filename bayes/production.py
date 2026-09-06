@@ -52,7 +52,8 @@ import pandas as pd
 from jax import lax
 from numpyro.infer import MCMC, NUTS
 
-from bayes.data import POSITIONS, SEASON_GAMES
+from bayes.data import POSITIONS
+from bayes.laplace import fit_laplace
 from bayes.spline import apply_spline_basis, natural_spline_basis
 
 # Knot placement for the aging curve, in years. Fixed rather than fit from
@@ -75,7 +76,7 @@ class PanelArrays:
     z: np.ndarray                # [P,T] sqrt(points per game), 0 where unseen
     obs: np.ndarray              # [P,T] True where the player played
     zvar: np.ndarray             # [P,T] measurement variance of z, 1 where unseen
-    games: np.ndarray            # [P,T] games played, SEASON_GAMES where unseen
+    games_frac: np.ndarray       # [P,T] share of the season played, 1 where unseen
     age_basis: np.ndarray        # [P,T,K] aging-curve basis, known every season
     start: np.ndarray            # [P,T] True at the player's first season seen
     est: np.ndarray              # [P,T] True where he counts as established
@@ -103,7 +104,8 @@ def _impute_age(panel, seasons) -> np.ndarray:
 
 # Season-level signals carried into the *next* season's transition. Both are
 # things a single season total cannot say on its own.
-CTRL_NAMES = ("usage", "late_form")
+CTRL_NAMES = ("usage", "late_form", "depth_rank", "moved", "qb_change",
+              "rb_room")
 
 
 def build_arrays(
@@ -139,8 +141,11 @@ def build_arrays(
     obs = np.zeros((P, T), bool)
     zvar = np.ones((P, T))
     # Full season where unseen, so the missed-time offset below is exactly zero
-    # for every cell that carries no observation.
-    games = np.full((P, T), float(SEASON_GAMES))
+    # for every cell that carries no observation. Held as a *share* of the
+    # season rather than a count, because the season is 15 games before 2021 and
+    # 16 from 2021 on; a count would make "one game missed" a different quantity
+    # in the two eras and the offset would absorb the difference as ability.
+    games_frac = np.ones((P, T))
     ctrl = np.zeros((P, T, C))
 
     pi = panel["athlete_id"].map(p_index).to_numpy()
@@ -162,7 +167,7 @@ def build_arrays(
     # Leave unobserved cells at a full season so the missed-time offset is
     # exactly zero there; the filter gates the level on `obs` anyway, so this
     # only guards against the value being read somewhere it should not be.
-    games[pi[played], si[played]] = panel["games"].to_numpy()[played]
+    games_frac[pi[played], si[played]] = panel["games_frac"].to_numpy()[played]
 
     # First season each player is seen. The filter restarts the state there
     # rather than carrying a state that does not yet exist.
@@ -215,17 +220,121 @@ def build_arrays(
     #             one who matched his points on 6.
     #  late_form: how the closing stretch compared with the season as a whole,
     #             which is where a mid-season change of role shows up.
+    #  depth_rank: where he is listed on the chart going into the season being
+    #             moved into. Unlike the other two this is not a box-score
+    #             quantity - it is the one thing here known *before* the season
+    #             rather than measured during the previous one, which is what
+    #             lets it speak to a role that is about to change.
+    #
+    # Depth rank earns its place almost entirely at quarterback. Measured on
+    # the panel, the change in points per game runs +0.03 / -1.69 / -2.09 from
+    # rank 1 to rank 3 for QBs, against a flat -0.52 / -0.51 / -0.48 for backs
+    # and similarly flat lines for receivers and ends: a backup quarterback who
+    # gets on the field is playing relief, while a backup back who plays simply
+    # gets his touches. `gamma` is per position, so the model can price it that
+    # way without being told to.
+    #
+    # There is no companion missingness channel. Being unlisted is mostly a
+    # statement about whether he plays at all, which is the availability
+    # model's question, and its effect on the *rate* does not even share a sign
+    # across positions (+0.58 for QBs, -0.92 for receivers). Unlisted rows are
+    # mean-imputed instead, which standardises to zero and lets the channel say
+    # nothing about them.
     if use_inputs:
         def _standardise(values):
             s = pd.Series(values, index=panel.index)
             grp = s.groupby([panel["pos"], panel["season"]])
             mu, sd = grp.transform("mean"), grp.transform("std")
-            return np.where(sd > 0, (s - mu) / sd.where(sd > 0, 1.0), 0.0)
+            out = np.where(sd > 0, (s - mu) / sd.where(sd > 0, 1.0), 0.0)
+            # A missing input standardises to its own group's mean, i.e. zero.
+            return np.nan_to_num(out, nan=0.0)
+
+        # Capped for the same reason the availability model caps it: ranks past
+        # fourth all mean "buried", and an uncapped tail would hand a few deep
+        # reserves leverage over the coefficient.
+        depth = (
+            panel["next_depth_rank"].clip(upper=4.0)
+            if "next_depth_rank" in panel
+            else pd.Series(np.nan, index=panel.index)
+        )
+
+        #  snap_share: the share of his offence's snaps he was on the field for
+        #             last season. Usage counts what he touched; this counts
+        #             whether he was out there, and the two come apart exactly
+        #             where it matters - a back on a third of the snaps who
+        #             scored twice reads as a starter in a box score.
+        #  team_vol:  the volume of the offence he is joining *next* season,
+        #             measured last season. Passing pool for quarterbacks and
+        #             receivers, rushing pool for backs. This is the column that
+        #             knows a player changed teams: he inherits the new
+        #             offence's plays, not his old one's.
+        #  moved:     he is on a different team for the season being predicted.
+        #  qb_change: the man throwing to him is different from the one who
+        #             threw most for his team last season.
+        #
+        # Both are August facts from the roster and depth chart, and both are
+        # binary because the continuous version of "what offence is he joining"
+        # does not survive being lagged - see attach_situation for the numbers.
+        # They are separate columns because they separate cleanly: with both in
+        # one regression, receivers lose 1.23 ppg to the move and nothing to the
+        # quarterback, while backs lose about a point to each.
+        #  competition: how much of the ball is already claimed on the team he
+        #             is joining - the summed prior workload of everyone else in
+        #             his position group there. The only channel here that is
+        #             about other people: a player's own history cannot contain
+        #             the fact that his new team just signed someone ahead of
+        #             him. Controlling for own prior rate, -0.046 ppg per rival
+        #             target/game for receivers (t=-2.45) and ends (t=-2.63),
+        #             -0.066 per rival carry/game for backs (t=-2.67).
+        #  rb_room:   how good the *rest of his backfield* is - the summed prior
+        #             ppg of the other backs on his August roster, zero for
+        #             everyone else. Backs are graded on who is beside them, not
+        #             on how many carries are nominally spoken for: with both
+        #             terms in one regression, quality is -0.099 ppg per rival
+        #             ppg (t=-2.62) and the carry count is +0.005 (t=+0.14).
+        #             Out-of-sample it is worth -0.74% RMSE for backs, the same
+        #             class as `usage` at -0.79%. It reorders the board where a
+        #             volume term would not: ~19 backs a season move more than
+        #             ten points, and in 2026 that is most of New Orleans.
+        rb_room = panel["next_rb_rival_quality"] if "next_rb_rival_quality" in panel             else pd.Series(0.0, index=panel.index)
+
+        # Competition was measured, wired in as a sixth channel, and taken back
+        # out. It is the one quantity here a player's own history genuinely
+        # cannot contain, and in a regression on raw ppg it is the strongest
+        # thing found - but as a channel it moved fold-2021 CRPS from 22.050 to
+        # 22.085, i.e. slightly the wrong way. Two candidate reasons, neither
+        # tested: it reaches only 80% of skill rows so a fifth are imputed to
+        # the mean, and `moved` may already carry most of it, since a player who
+        # changes teams is the one whose competition changes. Worth revisiting
+        # on four folds; `next_rival_load` stays on the panel for that.
+        moved = panel["next_moved"] if "next_moved" in panel else pd.Series(
+            np.nan, index=panel.index)
+        qb_change = panel["next_qb_change"] if "next_qb_change" in panel else pd.Series(
+            np.nan, index=panel.index)
+
+        # snap_share and team_vol were built, wired in and measured here, and
+        # then taken back out. Both remain on the panel; neither is a channel.
+        #
+        # Snap share is redundant. Within position it correlates 0.85-0.95 with
+        # `usage` - QB 0.95, RB 0.91, WR 0.90, TE 0.85 - because attempts plus
+        # carries plus targets already counts nearly the same thing. On fold
+        # 2021 the pair moved pooled CRPS from 22.11 to 22.23, i.e. nothing.
+        #
+        # Team volume is *not* redundant (it correlates -0.05 with a player's
+        # own usage) and is the only column here that knows a player changed
+        # teams, so it is the one worth revisiting - but on a single fold it
+        # earned nothing measurable, and an unvalidated feature does not belong
+        # in a board someone drafts from. Re-test it on four folds at matched
+        # chain settings before believing either result.
 
         channels = np.column_stack(
             [
                 _standardise(np.sqrt(panel["opp_pg"].clip(lower=0))),
                 _standardise(panel["late_form"].fillna(0.0)),
+                _standardise(depth),
+                _standardise(moved),
+                _standardise(qb_change),
+                _standardise(rb_room),
             ]
         )
         # The last grid column has no season after it to inform.
@@ -241,7 +350,7 @@ def build_arrays(
         z=z,
         obs=obs,
         zvar=zvar,
-        games=games,
+        games_frac=games_frac,
         age_basis=age_basis,
         start=start,
         est=est,
@@ -378,7 +487,7 @@ def _level(base, beta_age, age_basis, pos_idx):
     )
 
 
-def _missed_time_offset(lam, games, pos_idx):
+def _missed_time_offset(lam, games_frac, pos_idx):
     """How much a shortened season depresses the per-game rate observed in it.
 
     Within the same player, seasons where he plays less are also seasons where
@@ -397,7 +506,7 @@ def _missed_time_offset(lam, games, pos_idx):
 
     Centred at a full season, so ability means full-season ability.
     """
-    return lam[pos_idx][:, None] * (games - SEASON_GAMES) / SEASON_GAMES
+    return lam[pos_idx][:, None] * (games_frac - 1.0)
 
 
 def production_model(arr: PanelArrays, use_inputs: bool = True):
@@ -447,7 +556,7 @@ def production_model(arr: PanelArrays, use_inputs: bool = True):
     lam = numpyro.sample("lam", dist.Normal(0.0, 0.5).expand([N_POS]).to_event(1))
 
     m = _level(base, beta_age, jnp.asarray(arr.age_basis), pos)
-    m_obs = m + _missed_time_offset(lam, jnp.asarray(arr.games), pos)
+    m_obs = m + _missed_time_offset(lam, jnp.asarray(arr.games_frac), pos)
     v = kappa[pos][:, None] * jnp.asarray(arr.zvar)
 
     if use_inputs:
@@ -487,7 +596,23 @@ def fit_production(
     num_chains: int = 4,
     seed: int = 0,
     progress: bool = True,
-) -> MCMC:
+    inference: str = "nuts",
+):
+    """Fit the hyperparameters, by NUTS or by MAP + Laplace.
+
+    The latent abilities are marginalised either way - that is the Kalman
+    filter's job and it is unaffected by which sampler sits on top. What
+    ``inference`` chooses is only how the ~56 hyperparameters are explored. See
+    `bayes/laplace.py` for what the Gaussian approximation asserts and how it
+    reports its own failure.
+    """
+    if inference == "laplace":
+        return fit_laplace(
+            production_model, arr, use_inputs=use_inputs,
+            num_samples=num_samples, seed=seed,
+        )
+    if inference != "nuts":
+        raise ValueError(f"unknown inference {inference!r}")
     kernel = NUTS(production_model, target_accept_prob=0.9)
     mcmc = MCMC(
         kernel,
@@ -519,12 +644,12 @@ def filtered_states(arr: PanelArrays, posterior: dict, use_inputs: bool = True):
     ab = jnp.asarray(arr.age_basis)
     start = jnp.asarray(arr.start)
     ctrl_raw = jnp.asarray(arr.ctrl)
-    games = jnp.asarray(arr.games)
+    games_frac = jnp.asarray(arr.games_frac)
     est = jnp.asarray(arr.est).astype(int)
 
     def one(base, beta_age, rho, sigma, sigma_u, kappa, lam, gamma):
         m = _level(base, beta_age, ab, pos)
-        m_obs = m + _missed_time_offset(lam, games, pos)
+        m_obs = m + _missed_time_offset(lam, games_frac, pos)
         v = kappa[pos][:, None] * zvar
         ctrl = (
             jnp.einsum("ptc,pc->pt", ctrl_raw, gamma[pos])

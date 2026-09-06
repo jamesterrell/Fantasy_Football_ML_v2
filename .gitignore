@@ -36,3 +36,6 @@ Thumbs.db
 
 # Posterior draw matrices - large, regenerable from a projection run
 *.npz
+
+# Local Claude Code config: machine-specific paths, not project state
+.claude/settings.local.json

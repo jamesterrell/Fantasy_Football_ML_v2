@@ -140,6 +140,121 @@ def summarise(draws: np.ndarray, y: np.ndarray, point: str = "mean") -> dict:
     }
 
 
+TOP_K = 24
+
+# The board sizes actually reported. 24 is the historical elite diagnostic - one
+# starting lineup's worth of players per fold, and small enough that a single
+# season is an anecdote. 100 is the population the owner drafts from: roughly the
+# rows a 12-team league consumes in the first eight rounds. Reporting both is the
+# point. The aggregate scorecard averages elite accuracy against ~450 players per
+# season who are never drafted, and a change that improves the aggregate by
+# getting better at the 30-point tail is worth nothing here; a change that wins
+# the top 100 while wrecking the aggregate is visible because the aggregate is
+# still printed next to it.
+TOP_KS = (24, 100)
+
+
+def top_of_board(pred: np.ndarray, y: np.ndarray, draws=None, k: int = TOP_K) -> dict:
+    """Bias and CRPS over the top ``k`` rows, selected two different ways.
+
+    The two selections answer different questions and only one of them can see
+    the failure this project exists to fix.
+
+    ``by_proj`` takes the k rows the model ranked highest. It asks *when I say
+    elite, is he* - a precision question. A model that shrinks the top of the
+    board hard can still score well here, because it is graded on the players it
+    was already confident about and its errors on them are symmetric.
+
+    ``by_actual`` takes the k rows that actually finished highest, whether the
+    model ranked them there or not. It asks *when he was elite, did I say so* -
+    a recall question. Systematic under-projection of the top shows up here as a
+    large negative bias and nowhere else: those rows are a fixed 24 per season
+    regardless of what the model believed, so a model cannot improve this number
+    by declining to call anyone elite. Aggregate CRPS is dominated by the ~500
+    ordinary rows and will happily trade this away.
+
+    Bias is signed ``projection - actual``, so **negative means under-projected**.
+    ``bias_pct`` divides by the mean actual, which is what makes the number
+    comparable across folds whose top 24 sit at different levels.
+
+    ``draws`` is optional; without it CRPS falls back to MAE, which is what CRPS
+    equals for a point mass, so a deterministic baseline stays comparable.
+    """
+    pred, y = np.asarray(pred, float), np.asarray(y, float)
+    out = {}
+    for label, key in (("proj", pred), ("actual", y)):
+        # Ties broken by the other quantity is not worth the complexity: at k=24
+        # out of ~500 rows, exact ties in either points or projected points are
+        # vanishingly rare and never at the boundary.
+        idx = np.argsort(-key, kind="stable")[:k]
+        c = (
+            float(np.mean(crps_from_samples(draws[:, idx], y[idx])))
+            if draws is not None
+            else mae(y[idx], pred[idx])
+        )
+        out[f"{label}_n"] = int(len(idx))
+        out[f"{label}_mean_proj"] = float(pred[idx].mean())
+        out[f"{label}_mean_actual"] = float(y[idx].mean())
+        out[f"{label}_bias"] = float(pred[idx].mean() - y[idx].mean())
+        out[f"{label}_bias_pct"] = float(
+            100.0 * (pred[idx].mean() - y[idx].mean()) / y[idx].mean()
+        )
+        out[f"{label}_crps"] = c
+        out[f"{label}_rmse"] = rmse(y[idx], pred[idx])
+        out[f"{label}_cov80"] = (
+            interval_coverage(draws[:, idx], y[idx], 0.80)
+            if draws is not None
+            else float("nan")
+        )
+        out[f"{label}_idx"] = idx
+    return out
+
+
+def self_consistent_top(pred: np.ndarray, draws: np.ndarray, k: int = TOP_K,
+                        reps: int = 500, seed: int = 0) -> dict:
+    """What a correctly-calibrated version of *this* model would score on top-k.
+
+    Neither top-of-board bias has a target of zero. Both selections condition on
+    a quantity correlated with the error, so even a perfect forecaster shows
+    bias - negative when selecting by actual, positive when selecting by
+    projection - and the magnitude is monotone in the predictive *dispersion*,
+    not in the accuracy. Comparing a model's raw figure to a baseline's raw
+    figure therefore rewards over-dispersion, which is how this project got the
+    metric wrong once already.
+
+    The reference that needs no refit: treat each posterior predictive draw as
+    one synthetic season ``Y*``, re-select the top k by ``Y*``, and average
+    ``mean(pred) - mean(Y*)`` over draws. Under the model's own assumptions that
+    is exactly the number the observed statistic is drawn from.
+
+    **Observed minus self-consistent is the shrinkage signal**: negative means
+    the model really does under-project the top, positive means it does not.
+    """
+    draws = np.asarray(draws, float)
+    pred = np.asarray(pred, float)
+    n_draws = draws.shape[0]
+    rng = np.random.default_rng(seed)
+    sel = rng.choice(n_draws, size=min(reps, n_draws), replace=False)
+
+    ip = np.argsort(-pred, kind="stable")[:k]
+    sc_a = np.empty(len(sel))
+    sc_p = np.empty(len(sel))
+    sc_a_lvl = np.empty(len(sel))
+    for j, r in enumerate(sel):
+        ystar = draws[r]
+        ja = np.argsort(-ystar, kind="stable")[:k]
+        sc_a[j] = pred[ja].mean() - ystar[ja].mean()
+        sc_a_lvl[j] = ystar[ja].mean()
+        sc_p[j] = pred[ip].mean() - ystar[ip].mean()
+    return {
+        "sc_actual_bias": float(sc_a.mean()),
+        "sc_actual_bias_pct": float(100.0 * sc_a.mean() / sc_a_lvl.mean()),
+        "sc_actual_lo": float(np.quantile(sc_a, 0.05)),
+        "sc_actual_hi": float(np.quantile(sc_a, 0.95)),
+        "sc_proj_bias": float(sc_p.mean()),
+    }
+
+
 def summarise_point(pred: np.ndarray, y: np.ndarray) -> dict:
     """Scorecard for a deterministic forecast, for baseline comparison.
 
