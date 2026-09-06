@@ -80,6 +80,7 @@ is WR2 on both.
 | `adp` | **Average draft position** — the pick number he goes at on average in real ESPN PPR drafts. |
 | `round`, `pick_in_round` | The same thing in league terms. Round 3, pick 4 means he typically goes early in the third. |
 | `value` | **The bargain column.** How many draft slots he falls past where this board says he is worth taking. Positive is good: +21 means the room lets him last 21 picks longer than his value justifies. Negative means the room pays more for him than he is worth. |
+| `vbd` | **Value over replacement.** Points above the player you could have had for free at his position, which is what makes a quarterback and a running back comparable. `vbd_rank` sorts on this. |
 
 ### What he is worth
 
@@ -89,7 +90,6 @@ is WR2 on both.
 | `proj_median` | **The coin-flip number.** He beats this half the time. Not the same as the mean — see the warnings below. |
 | `p25`, `p75` | **The likely range.** He lands between these in half of all seasons — `p25` is a quiet year, `p75` a strong one. The extremes are cut off deliberately; these are the outcomes worth planning around. |
 | `range50` | `p75` minus `p25` — **how much of a gamble the pick is.** Two players with the same projection and different widths are not the same pick. Among the top 60, Josh Allen spans 107 points and McCaffrey spans 178, for almost identical expected value. |
-| `vbd` | **Value over replacement.** Points above the player you could have had for free at his position, which is what makes a quarterback and a running back comparable. `vbd_rank` sorts on this. |
 | `vbd_floor` | The same, computed from a bad-but-not-disastrous outcome (25th percentile). Sort by this when you need a reliable weekly starter. |
 | `risk_shift` | How much safer or riskier he is than his headline rank suggests. **Negative means his value depends on upside**; positive means he is steadier than he looks. |
 
