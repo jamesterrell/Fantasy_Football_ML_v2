@@ -87,7 +87,8 @@ is WR2 on both.
 |---|---|
 | `proj_mean` | Projected PPR points for the season, averaged across all 4,000 simulations. |
 | `proj_median` | **The coin-flip number.** He beats this half the time. Not the same as the mean — see the warnings below. |
-| `p05`, `p95` | **The realistic range.** He lands between these in 9 seasons out of 10 — `p05` is a disaster year, `p95` is everything going right. The width is the honest measure of how much of a gamble the pick is: McCaffrey spans 73–496, which is most of the board. |
+| `p25`, `p75` | **The likely range.** He lands between these in half of all seasons — `p25` is a quiet year, `p75` a strong one. The extremes are cut off deliberately; these are the outcomes worth planning around. |
+| `range50` | `p75` minus `p25` — **how much of a gamble the pick is.** Two players with the same projection and different widths are not the same pick. Among the top 60, Josh Allen spans 107 points and McCaffrey spans 178, for almost identical expected value. |
 | `vbd` | **Value over replacement.** Points above the player you could have had for free at his position, which is what makes a quarterback and a running back comparable. `vbd_rank` sorts on this. |
 | `vbd_floor` | The same, computed from a bad-but-not-disastrous outcome (25th percentile). Sort by this when you need a reliable weekly starter. |
 | `risk_shift` | How much safer or riskier he is than his headline rank suggests. **Negative means his value depends on upside**; positive means he is steadier than he looks. |
@@ -121,10 +122,11 @@ quarterback in the top 60 has a median 13–19 points *above* his mean, while
 boom-or-bust young backs run the other way. **Use `proj_median` when you want a
 fifty-fifty line.**
 
-**The intervals are too wide.** In testing, the model's "50% likely" range
-contained the real answer about 66% of the time. It is more uncertain than
-reality warrants, so treat the extremes as softer than they look. Numbers from
-the middle of the distribution are the trustworthy ones.
+**The ranges are too wide.** In testing, the model's `p25`–`p75` band contained
+the real answer about 66% of the time rather than the 50% it claims. It is more
+uncertain than reality warrants, so a wide `range50` overstates the gamble
+somewhat — but it still ranks players correctly against each other, which is
+what you use it for.
 
 **Rookies are missing, and that shifts everything else.** Beyond being absent
 from the board themselves, they absorb real draft picks — so players go a little

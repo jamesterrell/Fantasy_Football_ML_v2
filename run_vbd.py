@@ -126,6 +126,12 @@ def build(board: pd.DataFrame, teams: int, slots: dict[str, int], flex: int) -> 
                 top5[m] = (rank <= 5).mean(axis=0)
             out["p_top5_pos"] = top5
 
+    # The middle half of outcomes. Wider than a comparable player's means the
+    # same expected points bought with more variance, which is the distinction
+    # a single projection number hides.
+    if {"p25", "p75"}.issubset(out.columns):
+        out["range50"] = out["p75"] - out["p25"]
+
     out["pos_rank"] = out.groupby("pos")["proj_mean"].rank(ascending=False).astype(int)
     out = out.sort_values("vbd", ascending=False).reset_index(drop=True)
     out.insert(0, "vbd_rank", np.arange(1, len(out) + 1))
@@ -176,7 +182,7 @@ if __name__ == "__main__":
                         "status", "depth_rank", "age", "proj_mean", "proj_median",
                         "vbd", "vbd_floor", "vbd_ceil", "risk_shift",
                         "p_beat_replacement", "p_top5_pos", "p_starter",
-                        "exp_games", "p_misses_season", "p05", "p95")
+                        "exp_games", "p_misses_season", "p25", "p75", "range50")
             if c in vbd.columns]
     dest = OUT / f"vbd_board_{a.season}_{a.teams}team.csv"
     vbd[cols].to_csv(dest, index=False)

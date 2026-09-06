@@ -118,12 +118,13 @@ if __name__ == "__main__":
 
     # Ordered for reading left to right at a draft: who he is, where he sits on
     # his team, when the room takes him, what he is worth, and how wide the
-    # outcome could be. p05/p95 are the 5th and 95th percentiles of the same
-    # 4,000 simulations everything else is counted from.
+    # outcome could be. p25/p75 bracket the middle half of the same 4,000
+    # simulations everything else is counted from, and range50 is their width -
+    # two players with equal projections and unequal widths are different picks.
     cols = [c for c in ("vbd_rank", "display_name", "pos", "pos_rank", "team",
                         "depth_rank", "status",
                         "adp", "round", "pick_in_round", "value",
-                        "proj_mean", "proj_median", "p05", "p95",
+                        "proj_mean", "proj_median", "p25", "p75", "range50",
                         "vbd", "vbd_floor", "risk_shift",
                         "p_beat_replacement", "p_top5_pos", "p_starter",
                         "exp_games", "pct_owned")
