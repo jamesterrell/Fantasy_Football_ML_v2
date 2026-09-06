@@ -80,6 +80,9 @@ def replacement_levels(board: pd.DataFrame, counts: dict[str, int],
     return levels
 
 
+SEASON = [2026]  # set from the CLI; the draws file is named for it
+
+
 def build(board: pd.DataFrame, teams: int, slots: dict[str, int], flex: int) -> pd.DataFrame:
     out = board.copy()
     for label, col in (("vbd", "proj_mean"), ("vbd_floor", "p25"), ("vbd_ceil", "p75")):
@@ -90,6 +93,38 @@ def build(board: pd.DataFrame, teams: int, slots: dict[str, int], flex: int) -> 
         out[label] = out[col] - out["pos"].map(levels)
         if label == "vbd":
             out.attrs["counts"], out.attrs["levels"] = counts, levels
+
+    # Probabilities read straight off the posterior draws, not inferred from the
+    # summary columns. `proj_mean` is not the fifty-fifty point - the predictive
+    # is right-skewed for most players and has an atom at zero, so across the
+    # top 300 the actual beats the mean only 44% of the time, and for
+    # quarterbacks, whose downside is severe and whose ceiling is capped, it is
+    # 57%. `proj_median` is the fifty-fifty point by construction.
+    draws_path = OUT / f"projection_draws_{SEASON[0]}.npz"
+    if draws_path.exists():
+        z = np.load(draws_path, allow_pickle=True)
+        pos_of = dict(zip(z["athlete_id"].astype(str), range(len(z["athlete_id"]))))
+        d = z["draws"]
+        have = out["athlete_id"].astype(str).map(pos_of) if "athlete_id" in out.columns else None
+        if have is not None and have.notna().any():
+            idx = have.fillna(-1).astype(int).to_numpy()
+            lvl = out["pos"].map(levels).to_numpy(float)
+            beat = np.full(len(out), np.nan)
+            ok = idx >= 0
+            # Does this pick clear the player you could have had for nothing?
+            beat[ok] = (d[:, idx[ok]] > lvl[ok][None, :]).mean(axis=0)
+            out["p_beat_replacement"] = beat
+            # How often he is a top-5 asset at his position - the upside a pick
+            # in the first few rounds is actually being bought for.
+            top5 = np.full(len(out), np.nan)
+            for pos_name in out["pos"].dropna().unique():
+                m = (out["pos"] == pos_name).to_numpy() & ok
+                if not m.any():
+                    continue
+                sub = d[:, idx[m]]
+                rank = sub.shape[1] - sub.argsort(axis=1).argsort(axis=1)
+                top5[m] = (rank <= 5).mean(axis=0)
+            out["p_top5_pos"] = top5
 
     out["pos_rank"] = out.groupby("pos")["proj_mean"].rank(ascending=False).astype(int)
     out = out.sort_values("vbd", ascending=False).reset_index(drop=True)
@@ -121,7 +156,8 @@ if __name__ == "__main__":
         OUT.mkdir(parents=True, exist_ok=True)
 
     src = OUT / f"projections_{a.season}.csv"
-    board = pd.read_csv(src)
+    board = pd.read_csv(src)  # carries athlete_id, used to key the draws
+    SEASON[0] = a.season
     slots = {"QB": a.qb, "RB": a.rb, "WR": a.wr, "TE": a.te}
     vbd = build(board, a.teams, slots, a.flex)
 
@@ -137,8 +173,9 @@ if __name__ == "__main__":
               + (f" + {extra} to flex" if extra else "") + ")")
 
     cols = [c for c in ("vbd_rank", "display_name", "pos", "pos_rank", "team",
-                        "status", "depth_rank", "age", "proj_mean", "vbd",
-                        "vbd_floor", "vbd_ceil", "risk_shift", "p_starter",
+                        "status", "depth_rank", "age", "proj_mean", "proj_median",
+                        "vbd", "vbd_floor", "vbd_ceil", "risk_shift",
+                        "p_beat_replacement", "p_top5_pos", "p_starter",
                         "exp_games", "p_misses_season", "p05", "p95")
             if c in vbd.columns]
     dest = OUT / f"vbd_board_{a.season}_{a.teams}team.csv"

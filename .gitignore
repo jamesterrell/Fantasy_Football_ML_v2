@@ -39,3 +39,7 @@ Thumbs.db
 
 # Local Claude Code config: machine-specific paths, not project state
 .claude/settings.local.json
+
+# The draft board is the deliverable, not an intermediate: tracked so it is
+# recoverable and reviewable. Every other generated csv stays ignored.
+!artifacts/draft_board_*.csv

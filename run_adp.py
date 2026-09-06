@@ -117,8 +117,10 @@ if __name__ == "__main__":
     out["value"] = out.adp_rank - out.vbd_rank
 
     cols = [c for c in ("vbd_rank", "display_name", "pos", "pos_rank", "team",
-                        "adp", "round", "pick_in_round", "value", "proj_mean",
-                        "vbd", "vbd_floor", "risk_shift", "p_starter",
+                        "adp", "round", "pick_in_round", "value",
+                        "proj_mean", "proj_median",
+                        "vbd", "vbd_floor", "risk_shift",
+                        "p_beat_replacement", "p_top5_pos", "p_starter",
                         "exp_games", "status", "pct_owned")
             if c in out.columns]
     dest = OUT / f"draft_board_{a.season}_{a.teams}team.csv"
